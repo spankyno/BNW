@@ -1,0 +1,15 @@
+
+Project name: Prueba APP1
+DB Password: FUKyYgDEyaq6IrCb
+
+Project URL → 
+https://lmkkjkanhywtzpskxmjm.supabase.co
+
+anon (public) key → eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxta2tqa2FuaHl3dHpwc2t4bWptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4NTc3ODcsImV4cCI6MjA4NzQzMzc4N30.QN4KFyNVPtym5SXR-AWwu5zsiLmiLxaTwt139se9Y9s
+
+
+url: postgresql://postgres:[YOUR-PASSWORD]@db.lmkkjkanhywtzpskxmjm.supabase.co:5432/postgres
+------------------------------------------
+spankyelmalo@yahoo.es
+openL&78.ledi
+
