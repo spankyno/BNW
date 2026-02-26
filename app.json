@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Notes Manager App",
-    "slug": "notes-manager-app",
+    "slug": "bloc-de-notas-web",
     "version": "1.0.0",
     "extra": {
       "eas": {
@@ -48,3 +48,4 @@
   }
 
 }
+
