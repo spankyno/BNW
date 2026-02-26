@@ -3,6 +3,11 @@
     "name": "Notes Manager App",
     "slug": "notes-manager-app",
     "version": "1.0.0",
+    "extra": {
+      "eas": {
+        "projectId": "cd0b01a6-f408-4e80-a77a-0cefd7aa795e"
+      }
+    },  
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "rork-app",
@@ -41,4 +46,5 @@
       "typedRoutes": true
     }
   }
+
 }
