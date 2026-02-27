@@ -7,6 +7,7 @@ import { supabase } from '@/constants/supabase';
 
 const NOTES_KEY = '@notes_app_notes';
 const SETTINGS_KEY = '@notes_app_settings';
+const FAVORITES_KEY = '@notes_app_favorites';
 const MAX_DAILY_NOTES = 10;
 const MAX_OPEN_TABS = 10;
 
@@ -144,16 +145,26 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
           console.log('Supabase notes fetch error:', error.message);
           throw new Error('No se pudieron cargar las notas desde Supabase.');
         }
-        return (data ?? []).map((row: NotesPayload) => ({
+        const supabaseNotes: Note[] = (data ?? []).map((row: NotesPayload) => ({
           id: row.id,
           title: row.title,
           content: row.content,
           createdAt: row.created_at,
           updatedAt: row.updated_at,
+          isFavorite: false,
         }));
+        const favoritesStored = await AsyncStorage.getItem(FAVORITES_KEY);
+        const favoritesMap = favoritesStored ? (JSON.parse(favoritesStored) as Record<string, boolean>) : {};
+        return supabaseNotes.map((note) => ({ ...note, isFavorite: favoritesMap[note.id] ?? false }));
       }
       const stored = await AsyncStorage.getItem(NOTES_KEY);
-      return stored ? (JSON.parse(stored) as Note[]) : [];
+      const localNotes = stored ? (JSON.parse(stored) as Note[]) : [];
+      const favoritesStored = await AsyncStorage.getItem(FAVORITES_KEY);
+      const favoritesMap = favoritesStored ? (JSON.parse(favoritesStored) as Record<string, boolean>) : {};
+      return localNotes.map((note) => ({
+        ...note,
+        isFavorite: favoritesMap[note.id] ?? note.isFavorite ?? false,
+      }));
     },
     enabled: !auth.isLoading,
   });
@@ -285,6 +296,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       content: '',
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
+      isFavorite: false,
     };
     const updated = [note, ...notes];
     setNotes(updated);
@@ -457,6 +469,21 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       const updated = notes.filter((n) => n.id !== id);
       setNotes(updated);
       persistNotes.mutate(updated);
+      AsyncStorage.getItem(FAVORITES_KEY)
+        .then((stored) => {
+          if (!stored) {
+            return;
+          }
+          const parsed = JSON.parse(stored) as Record<string, boolean>;
+          if (parsed[id] == null) {
+            return;
+          }
+          delete parsed[id];
+          return AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(parsed));
+        })
+        .catch((favoriteDeleteError: unknown) => {
+          console.log('Favorites delete sync error:', favoriteDeleteError);
+        });
       if (auth.session?.user?.id) {
         supabase
           .from('notes')
@@ -475,6 +502,34 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       }
     },
     [notes, activeTabId, openTabIds, persistNotes, auth.session?.user?.id]
+  );
+
+  const toggleFavorite = useCallback(
+    (id: string) => {
+      const updated = notes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              isFavorite: !n.isFavorite,
+              updatedAt: new Date().toISOString(),
+            }
+          : n
+      );
+      setNotes(updated);
+      persistNotes.mutate(updated);
+
+      const favoritesMap = updated.reduce<Record<string, boolean>>((acc, note) => {
+        if (note.isFavorite) {
+          acc[note.id] = true;
+        }
+        return acc;
+      }, {});
+
+      AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(favoritesMap)).catch((favoritePersistError: unknown) => {
+        console.log('Favorites persist error:', favoritePersistError);
+      });
+    },
+    [notes, persistNotes]
   );
 
   const openTab = useCallback(
@@ -558,6 +613,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     addNote,
     updateNote,
     deleteNote,
+    toggleFavorite,
     openTab,
     closeTab,
     setActiveTabId,

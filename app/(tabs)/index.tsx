@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Plus, FileText, Trash2 } from 'lucide-react-native';
+import { Plus, FileText, Trash2, Heart } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useNotes } from '@/contexts/NotesContext';
 import CookieBanner from '@/components/CookieBanner';
@@ -40,6 +40,7 @@ export default function NotesListScreen() {
     notesCreatedToday,
     addNote,
     deleteNote,
+    toggleFavorite,
     openTab,
     settings,
     acceptCookie,
@@ -116,6 +117,20 @@ export default function NotesListScreen() {
           lineHeight: 18,
         },
         cardDate: { fontSize: 11, color: colors.placeholder },
+        rightActions: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          marginLeft: 8,
+        },
+        favoriteBtn: {
+          width: 34,
+          height: 34,
+          borderRadius: 8,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: '#FF3B3018',
+        },
         deleteBtn: {
           width: 34,
           height: 34,
@@ -123,7 +138,6 @@ export default function NotesListScreen() {
           alignItems: 'center',
           justifyContent: 'center',
           backgroundColor: colors.destructive + '12',
-          marginLeft: 8,
         },
         fab: {
           position: 'absolute',
@@ -200,17 +214,31 @@ export default function NotesListScreen() {
           </Text>
           <Text style={styles.cardDate}>{formatDate(item.updatedAt)}</Text>
         </View>
-        <TouchableOpacity
-          style={styles.deleteBtn}
-          onPress={() => handleDeleteNote(item)}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          testID={`delete-note-${item.id}`}
-        >
-          <Trash2 size={16} color={colors.destructive} />
-        </TouchableOpacity>
+        <View style={styles.rightActions}>
+          <TouchableOpacity
+            style={styles.favoriteBtn}
+            onPress={() => toggleFavorite(item.id)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            testID={`favorite-note-${item.id}`}
+          >
+            <Heart
+              size={16}
+              color="#FF3B30"
+              fill={item.isFavorite ? '#FF3B30' : 'transparent'}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.deleteBtn}
+            onPress={() => handleDeleteNote(item)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            testID={`delete-note-${item.id}`}
+          >
+            <Trash2 size={16} color={colors.destructive} />
+          </TouchableOpacity>
+        </View>
       </TouchableOpacity>
     ),
-    [styles, colors, handleOpenNote, handleDeleteNote]
+    [styles, colors, handleOpenNote, handleDeleteNote, toggleFavorite]
   );
 
   if (isLoading) {

@@ -289,7 +289,7 @@ export default function SettingsScreen() {
             <View style={styles.rowContent}>
               <Text style={styles.rowTitle}>Acerca de</Text>
               <Text style={styles.rowDesc}>
-                BNW (Bloc Notas Web) — App de notas de texto plano. Máximo 10 notas por día. Sincroniza con Supabase al iniciar sesión.
+                BNW (Bloc Notas Web) — App de notas de texto plano. Sincroniza con Supabase al iniciar sesión. Desarrollado por Aitor Sánchez Gutiérrez (c) 2026. Todos los derechos reservados.
               </Text>
             </View>
           </View>

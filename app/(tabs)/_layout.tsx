@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { FileText, CalendarDays, Search, Settings } from "lucide-react-native";
+import { FileText, CalendarDays, Search, Settings, Heart } from "lucide-react-native";
 import React from "react";
 import { useTheme } from "@/contexts/ThemeContext";
 
@@ -45,6 +45,13 @@ export default function TabLayout() {
         options={{
           title: "Buscar",
           tabBarIcon: ({ color, size }) => <Search size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="favorites"
+        options={{
+          title: "Favoritos",
+          tabBarIcon: ({ color, size }) => <Heart size={size} color={color} />,
         }}
       />
       <Tabs.Screen
