@@ -1,8 +1,25 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, Switch, ScrollView, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { Hash, Moon, Info, LogIn, LogOut, UserPlus, Cloud } from 'lucide-react-native';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { View, Text, Switch, ScrollView, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Platform, Alert } from 'react-native';
+import { Hash, Moon, Info, LogIn, LogOut, UserPlus, Cloud, Archive } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useNotes } from '@/contexts/NotesContext';
+import * as FileSystem from 'expo-file-system/legacy';
+import JSZip from 'jszip';
+
+function sanitizeFileName(value: string): string {
+  const cleaned = value.trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+  return cleaned.length > 0 ? cleaned.slice(0, 80) : 'nota';
+}
+
+function formatDateForFile(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const h = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  const sec = String(date.getSeconds()).padStart(2, '0');
+  return `${y}${m}${d}-${h}${min}${sec}`;
+}
 
 export default function SettingsScreen() {
   const { colors, theme, toggleTheme } = useTheme();
@@ -78,6 +95,22 @@ export default function SettingsScreen() {
         authButtonText: { fontSize: 13, fontWeight: '700' as const, color: '#FFFFFF' },
         authButtonTextAlt: { fontSize: 13, fontWeight: '700' as const, color: colors.text },
         authError: { fontSize: 12, color: colors.destructive },
+        backupButton: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          paddingVertical: 12,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.surfaceSecondary,
+        },
+        backupButtonText: {
+          fontSize: 13,
+          fontWeight: '700' as const,
+          color: colors.text,
+        },
         row: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -147,6 +180,62 @@ export default function SettingsScreen() {
     const diff = signUpCooldownUntil - now;
     return diff > 0 ? Math.ceil(diff / 1000) : 0;
   }, [signUpCooldownUntil, now]);
+
+  const handleDownloadAll = useCallback(async () => {
+    if (notes.length === 0) {
+      Alert.alert('Sin notas', 'No hay notas para exportar.');
+      return;
+    }
+
+    const backupName = `backup-notas-${formatDateForFile(new Date())}.zip`;
+
+    if (Platform.OS === 'web') {
+      try {
+        const zip = new JSZip();
+        notes.forEach((note) => {
+          const safeName = sanitizeFileName(note.title);
+          zip.file(`${safeName}-${note.id.slice(0, 6)}.txt`, note.content);
+        });
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(zipBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = backupName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        console.log('ZIP backup downloaded on web:', backupName, 'notes:', notes.length);
+      } catch (error) {
+        console.log('ZIP backup error on web:', error);
+        Alert.alert('Error', 'No se pudo descargar la copia de seguridad en .zip.');
+      }
+      return;
+    }
+
+    try {
+      const zip = new JSZip();
+      notes.forEach((note) => {
+        const safeName = sanitizeFileName(note.title);
+        zip.file(`${safeName}-${note.id.slice(0, 6)}.txt`, note.content);
+      });
+
+      const zipBase64 = await zip.generateAsync({ type: 'base64' });
+      const baseDir = FileSystem.documentDirectory;
+      if (!baseDir) {
+        throw new Error('documentDirectory no disponible');
+      }
+      const outputPath = `${baseDir}${backupName}`;
+      await FileSystem.writeAsStringAsync(outputPath, zipBase64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      console.log('ZIP backup saved in local filesystem:', outputPath, 'notes:', notes.length);
+      Alert.alert('Copia de seguridad creada', `Archivo guardado en:\n${outputPath}`);
+    } catch (error) {
+      console.log('ZIP backup save error on native:', error);
+      Alert.alert('Error', 'No se pudo guardar la copia de seguridad .zip.');
+    }
+  }, [notes]);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scroll}>
@@ -280,6 +369,27 @@ export default function SettingsScreen() {
       </View>
 
       <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Backup</Text>
+        <View style={styles.card}>
+          <View style={styles.row}>
+            <View style={[styles.rowIcon, { backgroundColor: colors.accentLight }]}>
+              <Archive size={17} color={colors.accent} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowTitle}>Exportar notas (.zip)</Text>
+              <Text style={styles.rowDesc}>Descarga una copia completa de tus notas en formato .zip</Text>
+            </View>
+          </View>
+          <View style={{ paddingHorizontal: 16, paddingBottom: 14 }}>
+            <TouchableOpacity style={styles.backupButton} onPress={handleDownloadAll} testID="settings-backup-zip-btn">
+              <Archive size={16} color={colors.text} />
+              <Text style={styles.backupButtonText}>Crear backup .zip</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.section}>
         <Text style={styles.sectionTitle}>Información</Text>
         <View style={styles.card}>
           <View style={styles.row}>
@@ -289,7 +399,7 @@ export default function SettingsScreen() {
             <View style={styles.rowContent}>
               <Text style={styles.rowTitle}>Acerca de</Text>
               <Text style={styles.rowDesc}>
-                BNW (Bloc Notas Web) — App de notas de texto plano. Sincroniza con Supabase al iniciar sesión. Desarrollado por Aitor Sánchez Gutiérrez (c) 2026. Todos los derechos reservados.
+                BNW (Bloc Notas Web) — App de notas de texto plano. Máximo 10 notas por día. Sincroniza con Supabase al iniciar sesión.
               </Text>
             </View>
           </View>
@@ -306,3 +416,7 @@ export default function SettingsScreen() {
     </ScrollView>
   );
 }
+
+  );
+}
+
