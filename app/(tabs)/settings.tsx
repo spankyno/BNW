@@ -415,3 +415,4 @@ export default function SettingsScreen() {
       </View>
     </ScrollView>
   );
+}
