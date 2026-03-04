@@ -9,6 +9,7 @@ import {
   Alert,
   ScrollView,
   KeyboardAvoidingView,
+  useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -48,6 +49,7 @@ export default function EditorScreen() {
   } = useNotes();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const { noteId } = useLocalSearchParams<{ noteId: string }>();
 
   const [showSaveAs, setShowSaveAs] = useState<boolean>(false);
@@ -204,6 +206,8 @@ export default function EditorScreen() {
     return Array.from({ length: count }, (_, i) => i + 1);
   }, [activeNote, draftContent, settings.showLineNumbers]);
 
+  const editorHeight = useMemo(() => Math.max(220, Math.min(420, windowHeight * 0.46)), [windowHeight]);
+
   const styles = useMemo(
     () =>
       StyleSheet.create({
@@ -241,7 +245,7 @@ export default function EditorScreen() {
           justifyContent: 'center',
           marginLeft: 4,
         },
-        editorContainer: { flex: 1, flexDirection: 'row' },
+        editorContainer: { height: editorHeight, flexDirection: 'row' },
         lineNumbers: {
           paddingTop: 14,
           paddingHorizontal: 8,
@@ -335,7 +339,7 @@ export default function EditorScreen() {
           fontWeight: '600' as const,
         },
       }),
-    [colors, insets, zoomScale]
+    [colors, insets, zoomScale, editorHeight]
   );
 
   return (
@@ -369,7 +373,7 @@ export default function EditorScreen() {
       {activeNote ? (
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={0}
         >
           <View style={styles.editorContainer}>
