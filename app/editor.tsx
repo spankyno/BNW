@@ -171,6 +171,33 @@ export default function EditorScreen() {
     }
 
     try {
+      if (Platform.OS === 'android' && FileSystem.StorageAccessFramework) {
+        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (!permissions.granted || !permissions.directoryUri) {
+          Alert.alert('Permiso requerido', 'Debes seleccionar la carpeta Descargas para guardar el archivo.');
+          return;
+        }
+
+        const pickedUri = permissions.directoryUri.toLowerCase();
+        if (!pickedUri.includes('download')) {
+          Alert.alert('Carpeta incorrecta', 'Selecciona la carpeta Descargas para guardar el .txt.');
+          return;
+        }
+
+        const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          permissions.directoryUri,
+          fileName,
+          'text/plain'
+        );
+        await FileSystem.writeAsStringAsync(fileUri, draftContent, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+
+        console.log('TXT saved in Android Downloads via SAF:', fileUri);
+        Alert.alert('Descarga completada', 'Archivo .txt guardado en Descargas.');
+        return;
+      }
+
       const baseDir = FileSystem.documentDirectory;
       if (!baseDir) {
         throw new Error('documentDirectory no disponible');
@@ -179,8 +206,8 @@ export default function EditorScreen() {
       await FileSystem.writeAsStringAsync(outputPath, draftContent, {
         encoding: FileSystem.EncodingType.UTF8,
       });
-      console.log('TXT saved in local filesystem:', outputPath);
-      Alert.alert('Descarga completada', `Nota guardada en:\n${outputPath}`);
+      console.log('TXT saved in app local filesystem:', outputPath);
+      Alert.alert('Guardado local', `En iOS se guardó dentro del almacenamiento de la app:\n${outputPath}`);
     } catch (error) {
       console.log('TXT save error on native:', error);
       Alert.alert('Error', 'No se pudo guardar el archivo .txt en el dispositivo.');
