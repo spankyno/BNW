@@ -221,6 +221,34 @@ export default function SettingsScreen() {
       });
 
       const zipBase64 = await zip.generateAsync({ type: 'base64' });
+
+      if (Platform.OS === 'android' && FileSystem.StorageAccessFramework) {
+        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (!permissions.granted || !permissions.directoryUri) {
+          Alert.alert('Permiso requerido', 'Debes seleccionar la carpeta Descargas para guardar el backup.');
+          return;
+        }
+
+        const pickedUri = permissions.directoryUri.toLowerCase();
+        if (!pickedUri.includes('download')) {
+          Alert.alert('Carpeta incorrecta', 'Selecciona la carpeta Descargas para guardar el backup .zip.');
+          return;
+        }
+
+        const zipUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          permissions.directoryUri,
+          backupName,
+          'application/zip'
+        );
+        await FileSystem.writeAsStringAsync(zipUri, zipBase64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        console.log('ZIP backup saved in Android Downloads via SAF:', zipUri, 'notes:', notes.length);
+        Alert.alert('Copia de seguridad creada', 'Backup .zip guardado en Descargas.');
+        return;
+      }
+
       const baseDir = FileSystem.documentDirectory;
       if (!baseDir) {
         throw new Error('documentDirectory no disponible');
@@ -229,8 +257,8 @@ export default function SettingsScreen() {
       await FileSystem.writeAsStringAsync(outputPath, zipBase64, {
         encoding: FileSystem.EncodingType.Base64,
       });
-      console.log('ZIP backup saved in local filesystem:', outputPath, 'notes:', notes.length);
-      Alert.alert('Copia de seguridad creada', `Archivo guardado en:\n${outputPath}`);
+      console.log('ZIP backup saved in app local filesystem:', outputPath, 'notes:', notes.length);
+      Alert.alert('Guardado local', `En iOS se guardó dentro del almacenamiento de la app:\n${outputPath}`);
     } catch (error) {
       console.log('ZIP backup save error on native:', error);
       Alert.alert('Error', 'No se pudo guardar la copia de seguridad .zip.');
