@@ -1,15 +1,19 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform, Alert } from 'react-native';
 import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import createContextHook from '@nkzw/create-context-hook';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Note } from '@/types/notes';
 import { supabase } from '@/constants/supabase';
 
 const NOTES_KEY = '@notes_app_notes';
+const LOCAL_FILES_KEY = '@notes_app_local_files';
 const SETTINGS_KEY = '@notes_app_settings';
-const FAVORITES_KEY = '@notes_app_favorites';
 const MAX_DAILY_NOTES = 10;
 const MAX_OPEN_TABS = 10;
+const LOCAL_FILES_DIR_NAME = 'bnw-local-files';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -26,6 +30,27 @@ function formatDateTime(date: Date): string {
 
 function getDateKey(iso: string): string {
   return iso.slice(0, 10);
+}
+
+function sanitizeFileName(value: string): string {
+  const cleaned = value.trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+  return cleaned.length > 0 ? cleaned.slice(0, 80) : 'nota';
+}
+
+function getFileTitle(fileName: string): string {
+  return fileName.replace(/\.txt$/i, '').trim() || 'Archivo local';
+}
+
+function triggerWebDownload(fileName: string, content: string): void {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
 interface Settings {
@@ -114,9 +139,34 @@ interface NotesPayload {
   updated_at: string;
 }
 
+async function ensureLocalFilesDirectory(): Promise<string | null> {
+  const baseDir = FileSystem.documentDirectory;
+  if (!baseDir) {
+    return null;
+  }
+  const directoryUri = `${baseDir}${LOCAL_FILES_DIR_NAME}/`;
+  const info = await FileSystem.getInfoAsync(directoryUri);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
+  }
+  return directoryUri;
+}
+
+async function readPickedTextAsset(asset: DocumentPicker.DocumentPickerAsset): Promise<string> {
+  if (Platform.OS === 'web') {
+    if (asset.file) {
+      return asset.file.text();
+    }
+    const response = await fetch(asset.uri);
+    return response.text();
+  }
+  return FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.UTF8 });
+}
+
 export const [NotesProvider, useNotes] = createContextHook(() => {
   const queryClient = useQueryClient();
-  const [notes, setNotes] = useState<Note[]>([]);
+  const [syncedNotes, setSyncedNotes] = useState<Note[]>([]);
+  const [localFileNotes, setLocalFileNotes] = useState<Note[]>([]);
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>({
@@ -145,28 +195,35 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
           console.log('Supabase notes fetch error:', error.message);
           throw new Error('No se pudieron cargar las notas desde Supabase.');
         }
-        const supabaseNotes: Note[] = (data ?? []).map((row: NotesPayload) => ({
+        return (data ?? []).map((row: NotesPayload) => ({
           id: row.id,
           title: row.title,
           content: row.content,
           createdAt: row.created_at,
           updatedAt: row.updated_at,
-          isFavorite: false,
+          storageType: 'synced' as const,
         }));
-        const favoritesStored = await AsyncStorage.getItem(FAVORITES_KEY);
-        const favoritesMap = favoritesStored ? (JSON.parse(favoritesStored) as Record<string, boolean>) : {};
-        return supabaseNotes.map((note) => ({ ...note, isFavorite: favoritesMap[note.id] ?? false }));
       }
       const stored = await AsyncStorage.getItem(NOTES_KEY);
-      const localNotes = stored ? (JSON.parse(stored) as Note[]) : [];
-      const favoritesStored = await AsyncStorage.getItem(FAVORITES_KEY);
-      const favoritesMap = favoritesStored ? (JSON.parse(favoritesStored) as Record<string, boolean>) : {};
-      return localNotes.map((note) => ({
+      const parsed = stored ? (JSON.parse(stored) as Note[]) : [];
+      return parsed.map((note) => ({
         ...note,
-        isFavorite: favoritesMap[note.id] ?? note.isFavorite ?? false,
+        storageType: 'synced' as const,
       }));
     },
     enabled: !auth.isLoading,
+  });
+
+  const localFilesQuery = useQuery({
+    queryKey: ['localFiles'],
+    queryFn: async () => {
+      const stored = await AsyncStorage.getItem(LOCAL_FILES_KEY);
+      const parsed = stored ? (JSON.parse(stored) as Note[]) : [];
+      return parsed.map((note) => ({
+        ...note,
+        storageType: 'local' as const,
+      }));
+    },
   });
 
   const settingsQuery = useQuery({
@@ -179,9 +236,15 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
 
   useEffect(() => {
     if (notesQuery.data) {
-      setNotes(notesQuery.data);
+      setSyncedNotes(notesQuery.data);
     }
   }, [notesQuery.data]);
+
+  useEffect(() => {
+    if (localFilesQuery.data) {
+      setLocalFileNotes(localFilesQuery.data);
+    }
+  }, [localFilesQuery.data]);
 
   useEffect(() => {
     let mounted = true;
@@ -244,7 +307,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     }
   }, [settingsQuery.data]);
 
-  const persistNotes = useMutation({
+  const persistSyncedNotes = useMutation({
     mutationFn: async (updated: Note[]) => {
       if (auth.session?.user?.id) {
         const payload = updated.map((note) => ({
@@ -266,7 +329,17 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       return updated;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notes'] });
+      void queryClient.invalidateQueries({ queryKey: ['notes', auth.session?.user?.id ?? 'local'] });
+    },
+  });
+
+  const persistLocalFiles = useMutation({
+    mutationFn: async (updated: Note[]) => {
+      await AsyncStorage.setItem(LOCAL_FILES_KEY, JSON.stringify(updated));
+      return updated;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['localFiles'] });
     },
   });
 
@@ -276,19 +349,25 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       return updated;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      void queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
 
+  const notes = useMemo(() => {
+    return [...localFileNotes, ...syncedNotes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }, [localFileNotes, syncedNotes]);
+
   const notesCreatedToday = useMemo(() => {
     const today = getDateKey(new Date().toISOString());
-    return notes.filter((n) => getDateKey(n.createdAt) === today).length;
-  }, [notes]);
+    return syncedNotes.filter((note) => getDateKey(note.createdAt) === today).length;
+  }, [syncedNotes]);
 
   const canCreateNote = notesCreatedToday < MAX_DAILY_NOTES;
 
   const addNote = useCallback((): Note | null => {
-    if (!canCreateNote) return null;
+    if (!canCreateNote) {
+      return null;
+    }
     const now = new Date();
     const note: Note = {
       id: generateId(),
@@ -296,28 +375,187 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       content: '',
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
-      isFavorite: false,
+      storageType: 'synced',
     };
-    const updated = [note, ...notes];
-    setNotes(updated);
-    persistNotes.mutate(updated);
+    const updated = [note, ...syncedNotes];
+    setSyncedNotes(updated);
+    persistSyncedNotes.mutate(updated);
 
     if (openTabIds.length < MAX_OPEN_TABS) {
       setOpenTabIds((prev) => [...prev, note.id]);
     }
     setActiveTabId(note.id);
+    console.log('Created synced note:', note.id);
     return note;
-  }, [canCreateNote, notes, openTabIds.length, persistNotes]);
+  }, [canCreateNote, syncedNotes, persistSyncedNotes, openTabIds.length]);
+
+  const importLocalTextFile = useCallback(async (): Promise<Note | null> => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['text/plain', 'text/*'],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]) {
+        console.log('Local TXT import cancelled');
+        return null;
+      }
+
+      const asset = result.assets[0];
+      const content = await readPickedTextAsset(asset);
+      const now = new Date().toISOString();
+      const title = getFileTitle(asset.name);
+      let localFileUri: string | undefined;
+
+      if (Platform.OS !== 'web') {
+        const directoryUri = await ensureLocalFilesDirectory();
+        if (!directoryUri) {
+          throw new Error('documentDirectory no disponible');
+        }
+        localFileUri = `${directoryUri}${generateId()}-${sanitizeFileName(title)}.txt`;
+        await FileSystem.writeAsStringAsync(localFileUri, content, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      }
+
+      const note: Note = {
+        id: generateId(),
+        title,
+        content,
+        createdAt: now,
+        updatedAt: now,
+        storageType: 'local',
+        localFileUri,
+      };
+      const updated = [note, ...localFileNotes];
+      setLocalFileNotes(updated);
+      persistLocalFiles.mutate(updated);
+      setOpenTabIds((prev) => (prev.includes(note.id) ? prev : [...prev.slice(-(MAX_OPEN_TABS - 1)), note.id]));
+      setActiveTabId(note.id);
+      console.log('Imported local TXT file:', asset.name, 'as note:', note.id);
+      return note;
+    } catch (error) {
+      console.log('Local TXT import error:', error);
+      Alert.alert('Error', 'No se pudo abrir el archivo .txt local.');
+      return null;
+    }
+  }, [localFileNotes, persistLocalFiles]);
+
+  const saveNoteAsLocalFile = useCallback(
+    async (id: string): Promise<Note | null> => {
+      const sourceNote = [...localFileNotes, ...syncedNotes].find((note) => note.id === id);
+      if (!sourceNote) {
+        return null;
+      }
+
+      const safeFileName = `${sanitizeFileName(sourceNote.title)}.txt`;
+
+      try {
+        if (Platform.OS === 'web') {
+          triggerWebDownload(safeFileName, sourceNote.content);
+          if (sourceNote.storageType === 'local') {
+            console.log('Downloaded existing local TXT on web:', sourceNote.id);
+            Alert.alert('Archivo guardado', 'Se descargó el archivo .txt local.');
+            return sourceNote;
+          }
+
+          const now = new Date().toISOString();
+          const localCopy: Note = {
+            ...sourceNote,
+            id: generateId(),
+            createdAt: now,
+            updatedAt: now,
+            storageType: 'local',
+          };
+          const updated = [localCopy, ...localFileNotes];
+          setLocalFileNotes(updated);
+          persistLocalFiles.mutate(updated);
+          console.log('Created local TXT copy on web:', localCopy.id);
+          Alert.alert('Archivo guardado', 'Se creó una copia local del .txt y se descargó al dispositivo.');
+          return localCopy;
+        }
+
+        const directoryUri = await ensureLocalFilesDirectory();
+        if (!directoryUri) {
+          throw new Error('documentDirectory no disponible');
+        }
+
+        if (sourceNote.storageType === 'local') {
+          const targetUri = sourceNote.localFileUri ?? `${directoryUri}${generateId()}-${safeFileName}`;
+          await FileSystem.writeAsStringAsync(targetUri, sourceNote.content, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
+          const updatedLocalNote: Note = {
+            ...sourceNote,
+            localFileUri: targetUri,
+            updatedAt: new Date().toISOString(),
+          };
+          const updated = localFileNotes.map((note) => (note.id === sourceNote.id ? updatedLocalNote : note));
+          setLocalFileNotes(updated);
+          persistLocalFiles.mutate(updated);
+          console.log('Saved local TXT note to device file:', targetUri);
+          Alert.alert('Archivo guardado', 'El archivo .txt local se actualizó en el dispositivo.');
+          return updatedLocalNote;
+        }
+
+        const localFileUri = `${directoryUri}${generateId()}-${safeFileName}`;
+        await FileSystem.writeAsStringAsync(localFileUri, sourceNote.content, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        const now = new Date().toISOString();
+        const localCopy: Note = {
+          ...sourceNote,
+          id: generateId(),
+          createdAt: now,
+          updatedAt: now,
+          storageType: 'local',
+          localFileUri,
+        };
+        const updated = [localCopy, ...localFileNotes];
+        setLocalFileNotes(updated);
+        persistLocalFiles.mutate(updated);
+        console.log('Created local TXT copy from synced note:', localFileUri, 'new note:', localCopy.id);
+        Alert.alert('Archivo guardado', 'Se creó una copia local .txt en el dispositivo.');
+        return localCopy;
+      } catch (error) {
+        console.log('Save note as local TXT error:', error);
+        Alert.alert('Error', 'No se pudo guardar el archivo .txt local.');
+        return null;
+      }
+    },
+    [localFileNotes, syncedNotes, persistLocalFiles]
+  );
 
   const updateNote = useCallback(
     (id: string, changes: Partial<Pick<Note, 'title' | 'content'>>) => {
-      const updated = notes.map((n) =>
-        n.id === id ? { ...n, ...changes, updatedAt: new Date().toISOString() } : n
+      const localTarget = localFileNotes.find((note) => note.id === id);
+      if (localTarget) {
+        const updatedLocalNotes = localFileNotes.map((note) =>
+          note.id === id ? { ...note, ...changes, updatedAt: new Date().toISOString() } : note
+        );
+        const updatedLocalNote = updatedLocalNotes.find((note) => note.id === id);
+        setLocalFileNotes(updatedLocalNotes);
+        persistLocalFiles.mutate(updatedLocalNotes);
+
+        if (Platform.OS !== 'web' && updatedLocalNote?.localFileUri && typeof changes.content === 'string') {
+          FileSystem.writeAsStringAsync(updatedLocalNote.localFileUri, updatedLocalNote.content, {
+            encoding: FileSystem.EncodingType.UTF8,
+          }).then(() => {
+            console.log('Persisted local TXT change to device file:', updatedLocalNote.localFileUri);
+          }).catch((error: unknown) => {
+            console.log('Persist local TXT file write error:', error);
+          });
+        }
+        return;
+      }
+
+      const updatedSyncedNotes = syncedNotes.map((note) =>
+        note.id === id ? { ...note, ...changes, updatedAt: new Date().toISOString() } : note
       );
-      setNotes(updated);
-      persistNotes.mutate(updated);
+      setSyncedNotes(updatedSyncedNotes);
+      persistSyncedNotes.mutate(updatedSyncedNotes);
     },
-    [notes, persistNotes]
+    [localFileNotes, syncedNotes, persistLocalFiles, persistSyncedNotes]
   );
 
   const signUp = useCallback(async (): Promise<boolean> => {
@@ -466,70 +704,40 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
 
   const deleteNote = useCallback(
     (id: string) => {
-      const updated = notes.filter((n) => n.id !== id);
-      setNotes(updated);
-      persistNotes.mutate(updated);
-      AsyncStorage.getItem(FAVORITES_KEY)
-        .then((stored) => {
-          if (!stored) {
-            return;
-          }
-          const parsed = JSON.parse(stored) as Record<string, boolean>;
-          if (parsed[id] == null) {
-            return;
-          }
-          delete parsed[id];
-          return AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(parsed));
-        })
-        .catch((favoriteDeleteError: unknown) => {
-          console.log('Favorites delete sync error:', favoriteDeleteError);
-        });
-      if (auth.session?.user?.id) {
-        supabase
-          .from('notes')
-          .delete()
-          .eq('id', id)
-          .eq('user_id', auth.session.user.id)
-          .then(({ error }) => {
-            if (error) {
-              console.log('Supabase delete error:', error.message);
-            }
+      const localTarget = localFileNotes.find((note) => note.id === id);
+      if (localTarget) {
+        const updatedLocalNotes = localFileNotes.filter((note) => note.id !== id);
+        setLocalFileNotes(updatedLocalNotes);
+        persistLocalFiles.mutate(updatedLocalNotes);
+        if (Platform.OS !== 'web' && localTarget.localFileUri) {
+          FileSystem.deleteAsync(localTarget.localFileUri, { idempotent: true }).catch((error: unknown) => {
+            console.log('Local TXT delete file error:', error);
           });
-      }
-      setOpenTabIds((prev) => prev.filter((tid) => tid !== id));
-      if (activeTabId === id) {
-        setActiveTabId(openTabIds.find((tid) => tid !== id) ?? null);
-      }
-    },
-    [notes, activeTabId, openTabIds, persistNotes, auth.session?.user?.id]
-  );
-
-  const toggleFavorite = useCallback(
-    (id: string) => {
-      const updated = notes.map((n) =>
-        n.id === id
-          ? {
-              ...n,
-              isFavorite: !n.isFavorite,
-              updatedAt: new Date().toISOString(),
-            }
-          : n
-      );
-      setNotes(updated);
-      persistNotes.mutate(updated);
-
-      const favoritesMap = updated.reduce<Record<string, boolean>>((acc, note) => {
-        if (note.isFavorite) {
-          acc[note.id] = true;
         }
-        return acc;
-      }, {});
+      } else {
+        const updatedSyncedNotes = syncedNotes.filter((note) => note.id !== id);
+        setSyncedNotes(updatedSyncedNotes);
+        persistSyncedNotes.mutate(updatedSyncedNotes);
+        if (auth.session?.user?.id) {
+          supabase
+            .from('notes')
+            .delete()
+            .eq('id', id)
+            .eq('user_id', auth.session.user.id)
+            .then(({ error }) => {
+              if (error) {
+                console.log('Supabase delete error:', error.message);
+              }
+            });
+        }
+      }
 
-      AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(favoritesMap)).catch((favoritePersistError: unknown) => {
-        console.log('Favorites persist error:', favoritePersistError);
-      });
+      setOpenTabIds((prev) => prev.filter((tabId) => tabId !== id));
+      if (activeTabId === id) {
+        setActiveTabId(openTabIds.find((tabId) => tabId !== id) ?? null);
+      }
     },
-    [notes, persistNotes]
+    [localFileNotes, syncedNotes, persistLocalFiles, persistSyncedNotes, auth.session?.user?.id, activeTabId, openTabIds]
   );
 
   const openTab = useCallback(
@@ -548,7 +756,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
 
   const closeTab = useCallback(
     (id: string) => {
-      const newTabs = openTabIds.filter((tid) => tid !== id);
+      const newTabs = openTabIds.filter((tabId) => tabId !== id);
       setOpenTabIds(newTabs);
       if (activeTabId === id) {
         setActiveTabId(newTabs.length > 0 ? newTabs[newTabs.length - 1] : null);
@@ -559,24 +767,24 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
 
   const getNotesForDate = useCallback(
     (dateStr: string): Note[] => {
-      return notes.filter((n) => getDateKey(n.createdAt) === dateStr);
+      return notes.filter((note) => getDateKey(note.createdAt) === dateStr);
     },
     [notes]
   );
 
   const getDatesWithNotes = useMemo(() => {
     const dates = new Set<string>();
-    notes.forEach((n) => dates.add(getDateKey(n.createdAt)));
+    notes.forEach((note) => dates.add(getDateKey(note.createdAt)));
     return dates;
   }, [notes]);
 
   const searchNotes = useCallback(
     (query: string, startDate?: string, endDate?: string): Note[] => {
-      const q = query.toLowerCase();
-      return notes.filter((n) => {
+      const loweredQuery = query.toLowerCase();
+      return notes.filter((note) => {
         const matchesQuery =
-          !query || n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q);
-        const noteDate = getDateKey(n.createdAt);
+          !query || note.title.toLowerCase().includes(loweredQuery) || note.content.toLowerCase().includes(loweredQuery);
+        const noteDate = getDateKey(note.createdAt);
         const matchesStart = !startDate || noteDate >= startDate;
         const matchesEnd = !endDate || noteDate <= endDate;
         return matchesQuery && matchesStart && matchesEnd;
@@ -598,39 +806,75 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
   }, [settings, persistSettings]);
 
   const getNoteById = useCallback(
-    (id: string): Note | undefined => notes.find((n) => n.id === id),
+    (id: string): Note | undefined => notes.find((note) => note.id === id),
     [notes]
   );
 
-  return {
-    notes,
-    openTabIds,
-    activeTabId,
-    settings,
-    canCreateNote,
-    notesCreatedToday,
-    isLoading: notesQuery.isLoading || auth.isLoading,
-    addNote,
-    updateNote,
-    deleteNote,
-    toggleFavorite,
-    openTab,
-    closeTab,
-    setActiveTabId,
-    getNotesForDate,
-    getDatesWithNotes,
-    searchNotes,
-    toggleLineNumbers,
-    acceptCookie,
-    getNoteById,
-    auth,
-    email,
-    password,
-    setEmail,
-    setPassword,
-    signUp,
-    signIn,
-    signOut,
-    signUpCooldownUntil,
-  };
+  return useMemo(
+    () => ({
+      notes,
+      openTabIds,
+      activeTabId,
+      settings,
+      canCreateNote,
+      notesCreatedToday,
+      isLoading: notesQuery.isLoading || localFilesQuery.isLoading || auth.isLoading,
+      addNote,
+      updateNote,
+      deleteNote,
+      openTab,
+      closeTab,
+      setActiveTabId,
+      getNotesForDate,
+      getDatesWithNotes,
+      searchNotes,
+      toggleLineNumbers,
+      acceptCookie,
+      getNoteById,
+      auth,
+      email,
+      password,
+      setEmail,
+      setPassword,
+      signUp,
+      signIn,
+      signOut,
+      signUpCooldownUntil,
+      importLocalTextFile,
+      saveNoteAsLocalFile,
+    }),
+    [
+      notes,
+      openTabIds,
+      activeTabId,
+      settings,
+      canCreateNote,
+      notesCreatedToday,
+      notesQuery.isLoading,
+      localFilesQuery.isLoading,
+      auth,
+      addNote,
+      updateNote,
+      deleteNote,
+      openTab,
+      closeTab,
+      setActiveTabId,
+      getNotesForDate,
+      getDatesWithNotes,
+      searchNotes,
+      toggleLineNumbers,
+      acceptCookie,
+      getNoteById,
+      email,
+      password,
+      setEmail,
+      setPassword,
+      signUp,
+      signIn,
+      signOut,
+      signUpCooldownUntil,
+      importLocalTextFile,
+      saveNoteAsLocalFile,
+    ]
+  );
 });
