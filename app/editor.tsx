@@ -9,11 +9,12 @@ import {
   Alert,
   ScrollView,
   KeyboardAvoidingView,
-  useWindowDimensions,
+  NativeSyntheticEvent,
+  TextInputScrollEventData,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Download, Save, Trash2, ZoomIn, ZoomOut } from 'lucide-react-native';
+import { ArrowLeft, Download, Save, Trash2, ZoomIn, ZoomOut, Cloud, HardDrive } from 'lucide-react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useNotes } from '@/contexts/NotesContext';
@@ -46,17 +47,18 @@ export default function EditorScreen() {
     updateNote,
     deleteNote,
     settings,
+    saveNoteAsLocalFile,
   } = useNotes();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
   const { noteId } = useLocalSearchParams<{ noteId: string }>();
+  const lineNumbersRef = useRef<ScrollView | null>(null);
+  const lastSavedContentRef = useRef<string>('');
 
   const [showSaveAs, setShowSaveAs] = useState<boolean>(false);
   const [zoomScale, setZoomScale] = useState<number>(1);
   const [draftContent, setDraftContent] = useState<string>('');
   const [isTyping, setIsTyping] = useState<boolean>(false);
-  const lastSavedContentRef = useRef<string>('');
 
   useEffect(() => {
     if (noteId) {
@@ -74,7 +76,7 @@ export default function EditorScreen() {
     () =>
       openTabIds
         .map((id) => getNoteById(id))
-        .filter((n): n is NonNullable<typeof n> => n != null),
+        .filter((note): note is NonNullable<typeof note> => note != null),
     [openTabIds, getNoteById]
   );
 
@@ -120,7 +122,9 @@ export default function EditorScreen() {
 
   const handleSaveAs = useCallback(
     (title: string) => {
-      if (!activeTabId) return;
+      if (!activeTabId) {
+        return;
+      }
       updateNote(activeTabId, { title });
       setShowSaveAs(false);
     },
@@ -128,7 +132,9 @@ export default function EditorScreen() {
   );
 
   const handleDelete = useCallback(() => {
-    if (!activeNote) return;
+    if (!activeNote) {
+      return;
+    }
     Alert.alert('Eliminar nota', `¿Eliminar "${activeNote.title}"?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
@@ -142,7 +148,7 @@ export default function EditorScreen() {
         },
       },
     ]);
-  }, [activeNote, deleteNote, openTabIds, router]);
+  }, [activeNote, deleteNote, openTabIds.length, router]);
 
   const handleDownload = useCallback(async () => {
     if (!activeNote) {
@@ -155,12 +161,12 @@ export default function EditorScreen() {
       try {
         const blob = new Blob([draftContent], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = fileName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
         URL.revokeObjectURL(url);
         console.log('TXT downloaded on web:', fileName);
       } catch (error) {
@@ -214,6 +220,22 @@ export default function EditorScreen() {
     }
   }, [activeNote, draftContent]);
 
+  const handleSaveLocalFile = useCallback(async () => {
+    if (!activeTabId) {
+      return;
+    }
+    if (draftContent !== lastSavedContentRef.current) {
+      updateNote(activeTabId, { content: draftContent });
+      lastSavedContentRef.current = draftContent;
+      setIsTyping(false);
+    }
+    const savedNote = await saveNoteAsLocalFile(activeTabId);
+    if (savedNote && savedNote.id !== activeTabId) {
+      openTab(savedNote.id);
+      setActiveTabId(savedNote.id);
+      router.replace({ pathname: '/editor' as never, params: { noteId: savedNote.id } as never });
+    }
+  }, [activeTabId, draftContent, saveNoteAsLocalFile, updateNote, openTab, setActiveTabId, router]);
 
   const handleZoomIn = useCallback(() => {
     setZoomScale((prev) => Number(Math.min(MAX_ZOOM, prev + ZOOM_STEP).toFixed(2)));
@@ -227,13 +249,34 @@ export default function EditorScreen() {
     router.back();
   }, [router]);
 
+  const handleEditorScroll = useCallback((event: NativeSyntheticEvent<TextInputScrollEventData>) => {
+    const offsetY = event.nativeEvent.contentOffset.y;
+    lineNumbersRef.current?.scrollTo({ y: offsetY, animated: false });
+  }, []);
+
   const lines = useMemo(() => {
-    if (!activeNote || !settings.showLineNumbers) return [];
+    if (!activeNote || !settings.showLineNumbers) {
+      return [];
+    }
     const count = (draftContent.match(/\n/g) || []).length + 1;
-    return Array.from({ length: count }, (_, i) => i + 1);
+    return Array.from({ length: count }, (_, index) => index + 1);
   }, [activeNote, draftContent, settings.showLineNumbers]);
 
-  const editorHeight = useMemo(() => Math.max(220, Math.min(420, windowHeight * 0.46)), [windowHeight]);
+  const storageMeta = useMemo(() => {
+    if (!activeNote) {
+      return { label: 'Editor', icon: null };
+    }
+    if (activeNote.storageType === 'local') {
+      return {
+        label: 'Archivo local',
+        icon: <HardDrive size={14} color={colors.textSecondary} />,
+      };
+    }
+    return {
+      label: 'Nota sincronizada',
+      icon: <Cloud size={14} color={colors.accent} />,
+    };
+  }, [activeNote, colors.accent, colors.textSecondary]);
 
   const styles = useMemo(
     () =>
@@ -257,12 +300,25 @@ export default function EditorScreen() {
           justifyContent: 'center',
           backgroundColor: colors.surfaceSecondary,
         },
-        headerTitle: {
+        headerCenter: {
           flex: 1,
-          fontSize: 15,
-          fontWeight: '600' as const,
-          color: colors.text,
           marginHorizontal: 12,
+        },
+        headerTitle: {
+          fontSize: 15,
+          fontWeight: '700' as const,
+          color: colors.text,
+        },
+        headerMeta: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          marginTop: 3,
+        },
+        headerMetaText: {
+          fontSize: 11,
+          fontWeight: '600' as const,
+          color: colors.textSecondary,
         },
         headerAction: {
           width: 38,
@@ -272,25 +328,39 @@ export default function EditorScreen() {
           justifyContent: 'center',
           marginLeft: 4,
         },
-        editorContainer: { height: editorHeight, flexDirection: 'row' },
+        editorShell: {
+          flex: 1,
+        },
+        editorContainer: {
+          flex: 1,
+          flexDirection: 'row',
+          backgroundColor: colors.surface,
+        },
         lineNumbers: {
           paddingTop: 14,
           paddingHorizontal: 8,
           backgroundColor: colors.surfaceSecondary,
           borderRightWidth: 1,
           borderRightColor: colors.border,
-          minWidth: 40,
-          alignItems: 'flex-end',
+          minWidth: 42,
         },
         lineNum: {
           fontSize: BASE_LINE_NUMBER_SIZE * zoomScale,
           lineHeight: BASE_LINE_NUMBER_HEIGHT * zoomScale,
           color: colors.placeholder,
+          textAlign: 'right',
           fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+        },
+        inputWrap: {
+          flex: 1,
+          backgroundColor: colors.surface,
         },
         textInput: {
           flex: 1,
-          padding: 14,
+          paddingTop: 14,
+          paddingBottom: 18,
+          paddingLeft: 14,
+          paddingRight: 18,
           fontSize: BASE_FONT_SIZE * zoomScale,
           lineHeight: BASE_LINE_HEIGHT * zoomScale,
           color: colors.text,
@@ -346,27 +416,27 @@ export default function EditorScreen() {
         },
         toolBtn: {
           flex: 1,
-          minHeight: 40,
+          minHeight: 42,
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'center',
           paddingHorizontal: 10,
           paddingVertical: 8,
-          borderRadius: 10,
+          borderRadius: 12,
           backgroundColor: colors.surfaceSecondary,
           gap: 6,
         },
         toolBtnDanger: {
           backgroundColor: colors.destructive + '12',
         },
-        toolText: { fontSize: 12, fontWeight: '600' as const },
+        toolText: { fontSize: 11, fontWeight: '700' as const },
         autoSaveText: {
           fontSize: 12,
           color: colors.textSecondary,
           fontWeight: '600' as const,
         },
       }),
-    [colors, insets, zoomScale, editorHeight]
+    [colors, insets, zoomScale]
   );
 
   return (
@@ -375,9 +445,15 @@ export default function EditorScreen() {
         <TouchableOpacity style={styles.backBtn} onPress={handleBack} testID="editor-back">
           <ArrowLeft size={20} color={colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {activeNote?.title ?? 'Editor'}
-        </Text>
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {activeNote?.title ?? 'Editor'}
+          </Text>
+          <View style={styles.headerMeta}>
+            {storageMeta.icon}
+            <Text style={styles.headerMetaText}>{storageMeta.label}</Text>
+          </View>
+        </View>
         <TouchableOpacity
           style={[styles.headerAction, { backgroundColor: colors.accentLight }]}
           onPress={() => setShowSaveAs(true)}
@@ -393,7 +469,9 @@ export default function EditorScreen() {
         onSelect={setActiveTabId}
         onClose={(id) => {
           closeTab(id);
-          if (openTabIds.length <= 1) router.back();
+          if (openTabIds.length <= 1) {
+            router.back();
+          }
         }}
       />
 
@@ -403,75 +481,91 @@ export default function EditorScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={0}
         >
-          <View style={styles.editorContainer}>
-            {settings.showLineNumbers && (
-              <ScrollView style={styles.lineNumbers} showsVerticalScrollIndicator={false}>
-                {lines.map((num) => (
-                  <Text key={num} style={styles.lineNum}>
-                    {num}
-                  </Text>
-                ))}
-              </ScrollView>
-            )}
-            <TextInput
-              style={styles.textInput}
-              value={draftContent}
-              onChangeText={handleContentChange}
-              multiline
-              placeholder="Escribe tu nota aquí..."
-              placeholderTextColor={colors.placeholder}
-              autoCorrect={false}
-              autoCapitalize="sentences"
-              testID="note-editor-input"
-            />
-          </View>
-
-          <View style={styles.bottomPanel}>
-            <View style={styles.topControlRow}>
-              <Text style={styles.autoSaveText} testID="autosave-status-text">
-                {isTyping ? 'Escribiendo…' : 'Guardado'}
-              </Text>
-
-              <View style={styles.zoomControlWrap}>
-                <TouchableOpacity
-                  style={styles.zoomBtn}
-                  onPress={handleZoomOut}
-                  disabled={zoomScale <= MIN_ZOOM}
-                  testID="zoom-out"
+          <View style={styles.editorShell}>
+            <View style={styles.editorContainer}>
+              {settings.showLineNumbers && (
+                <ScrollView
+                  ref={lineNumbersRef}
+                  style={styles.lineNumbers}
+                  showsVerticalScrollIndicator={false}
+                  scrollEnabled={false}
                 >
-                  <ZoomOut size={16} color={zoomScale <= MIN_ZOOM ? colors.placeholder : colors.text} />
-                </TouchableOpacity>
-                <Text style={styles.zoomText} testID="zoom-value">
-                  {Math.round(zoomScale * 100)}%
-                </Text>
-                <TouchableOpacity
-                  style={styles.zoomBtn}
-                  onPress={handleZoomIn}
-                  disabled={zoomScale >= MAX_ZOOM}
-                  testID="zoom-in"
-                >
-                  <ZoomIn size={16} color={zoomScale >= MAX_ZOOM ? colors.placeholder : colors.text} />
-                </TouchableOpacity>
+                  {lines.map((num) => (
+                    <Text key={num} style={styles.lineNum}>
+                      {num}
+                    </Text>
+                  ))}
+                </ScrollView>
+              )}
+              <View style={styles.inputWrap}>
+                <TextInput
+                  style={styles.textInput}
+                  value={draftContent}
+                  onChangeText={handleContentChange}
+                  onScroll={handleEditorScroll}
+                  multiline
+                  scrollEnabled
+                  placeholder="Escribe tu nota aquí..."
+                  placeholderTextColor={colors.placeholder}
+                  selectionColor={colors.accent}
+                  autoCorrect={false}
+                  autoCapitalize="sentences"
+                  testID="note-editor-input"
+                />
               </View>
             </View>
 
-            <View style={styles.toolbar}>
-              <TouchableOpacity style={styles.toolBtn} onPress={() => setShowSaveAs(true)} testID="save-as-btn">
-                <Save size={15} color={colors.accent} />
-                <Text style={[styles.toolText, { color: colors.accent }]}>Guardar como</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.toolBtn} onPress={handleDownload} testID="download-txt-btn">
-                <Download size={15} color={colors.text} />
-                <Text style={[styles.toolText, { color: colors.text }]}>Descargar .txt</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.toolBtn, styles.toolBtnDanger]}
-                onPress={handleDelete}
-                testID="delete-note-btn"
-              >
-                <Trash2 size={15} color={colors.destructive} />
-                <Text style={[styles.toolText, { color: colors.destructive }]}>Eliminar</Text>
-              </TouchableOpacity>
+            <View style={styles.bottomPanel}>
+              <View style={styles.topControlRow}>
+                <Text style={styles.autoSaveText} testID="autosave-status-text">
+                  {isTyping ? 'Escribiendo…' : 'Guardado'}
+                </Text>
+
+                <View style={styles.zoomControlWrap}>
+                  <TouchableOpacity
+                    style={styles.zoomBtn}
+                    onPress={handleZoomOut}
+                    disabled={zoomScale <= MIN_ZOOM}
+                    testID="zoom-out"
+                  >
+                    <ZoomOut size={16} color={zoomScale <= MIN_ZOOM ? colors.placeholder : colors.text} />
+                  </TouchableOpacity>
+                  <Text style={styles.zoomText} testID="zoom-value">
+                    {Math.round(zoomScale * 100)}%
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.zoomBtn}
+                    onPress={handleZoomIn}
+                    disabled={zoomScale >= MAX_ZOOM}
+                    testID="zoom-in"
+                  >
+                    <ZoomIn size={16} color={zoomScale >= MAX_ZOOM ? colors.placeholder : colors.text} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.toolbar}>
+                <TouchableOpacity style={styles.toolBtn} onPress={() => setShowSaveAs(true)} testID="save-as-btn">
+                  <Save size={15} color={colors.accent} />
+                  <Text style={[styles.toolText, { color: colors.accent }]}>Guardar como</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.toolBtn} onPress={handleSaveLocalFile} testID="save-local-txt-btn">
+                  <HardDrive size={15} color={colors.text} />
+                  <Text style={[styles.toolText, { color: colors.text }]}>Guardar local</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.toolBtn} onPress={handleDownload} testID="download-txt-btn">
+                  <Download size={15} color={colors.text} />
+                  <Text style={[styles.toolText, { color: colors.text }]}>Descargar .txt</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.toolBtn, styles.toolBtnDanger]}
+                  onPress={handleDelete}
+                  testID="delete-note-btn"
+                >
+                  <Trash2 size={15} color={colors.destructive} />
+                  <Text style={[styles.toolText, { color: colors.destructive }]}>Eliminar</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </KeyboardAvoidingView>
