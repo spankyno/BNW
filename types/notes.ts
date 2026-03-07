@@ -1,10 +1,14 @@
+export type NoteStorageType = 'synced' | 'local';
+
 export interface Note {
   id: string;
   title: string;
   content: string;
   createdAt: string;
   updatedAt: string;
+  storageType: NoteStorageType;
   isFavorite: boolean;
+  localFileUri?: string;
 }
 
 export interface AppSettings {
