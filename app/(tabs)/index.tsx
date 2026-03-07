@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Plus, FileText, Trash2, Cloud, Save, FolderOpen } from 'lucide-react-native';
+import { Plus, FileText, Trash2, Cloud, Save, FolderOpen, Heart } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useNotes } from '@/contexts/NotesContext';
 import CookieBanner from '@/components/CookieBanner';
@@ -45,6 +45,9 @@ export default function NotesListScreen() {
     acceptCookie,
     importLocalTextFile,
   } = useNotes();
+
+  const syncedNotesCount = useMemo(() => notes.filter((note) => note.storageType === 'synced').length, [notes]);
+  const localNotesCount = useMemo(() => notes.filter((note) => note.storageType === 'local').length, [notes]);
   const router = useRouter();
 
   const handleCreateNote = useCallback(() => {
@@ -190,6 +193,11 @@ export default function NotesListScreen() {
           alignItems: 'center',
           marginBottom: 4,
         },
+        favoriteIconWrap: {
+          marginRight: 8,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
         cardTitle: {
           flex: 1,
           fontSize: 15,
@@ -295,6 +303,11 @@ export default function NotesListScreen() {
           </View>
           <View style={styles.cardContent}>
             <View style={styles.cardTitleRow}>
+              {item.isFavorite ? (
+                <View style={styles.favoriteIconWrap}>
+                  <Heart size={14} color="#E53935" fill="#E53935" />
+                </View>
+              ) : null}
               <Text style={styles.cardTitle} numberOfLines={1}>
                 {item.title}
               </Text>
@@ -342,11 +355,10 @@ export default function NotesListScreen() {
         ListHeaderComponent={
           <>
             <View style={styles.hero}>
-              <Text style={styles.heroEyebrow}>BNW - Bloc Notas Web</Text>
-              <Text style={styles.heroTitle}>Notas sincronizadas y archivos locales</Text>
-              <Text style={styles.heroText}>
-                Abre archivos .txt del dispositivo, edítalos en la misma app y distingue al instante qué se sincroniza y qué vive solo en local.
-              </Text>
+              <Text style={styles.heroEyebrow}>Biblioteca</Text>
+              <Text style={styles.heroTitle}>BNW - Bloc Notas Web</Text>
+              <Text style={styles.heroText}>Nº Notas sincronizadas web: {syncedNotesCount}</Text>
+              <Text style={styles.heroText}>Nº Notas en local: {localNotesCount}</Text>
               <View style={styles.actionsRow}>
                 <TouchableOpacity
                   style={[
