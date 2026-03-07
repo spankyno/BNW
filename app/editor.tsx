@@ -11,20 +11,15 @@ import {
   KeyboardAvoidingView,
   NativeSyntheticEvent,
   TextInputScrollEventData,
+  LayoutChangeEvent,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Download, Save, Trash2, ZoomIn, ZoomOut, Cloud, HardDrive } from 'lucide-react-native';
-import * as FileSystem from 'expo-file-system/legacy';
+import { ArrowLeft, Save, Trash2, ZoomIn, ZoomOut, Cloud, HardDrive, Heart } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useNotes } from '@/contexts/NotesContext';
 import NoteTabBar from '@/components/NoteTabBar';
 import SaveAsModal from '@/components/SaveAsModal';
-
-function sanitizeFileName(value: string): string {
-  const cleaned = value.trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
-  return cleaned.length > 0 ? cleaned.slice(0, 80) : 'nota';
-}
 
 const MIN_ZOOM = 0.8;
 const MAX_ZOOM = 1.8;
@@ -48,6 +43,7 @@ export default function EditorScreen() {
     deleteNote,
     settings,
     saveNoteAsLocalFile,
+    toggleFavorite,
   } = useNotes();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -59,6 +55,8 @@ export default function EditorScreen() {
   const [zoomScale, setZoomScale] = useState<number>(1);
   const [draftContent, setDraftContent] = useState<string>('');
   const [isTyping, setIsTyping] = useState<boolean>(false);
+  const [editorViewportHeight, setEditorViewportHeight] = useState<number>(0);
+  const [editorContentHeight, setEditorContentHeight] = useState<number>(0);
 
   useEffect(() => {
     if (noteId) {
@@ -150,76 +148,6 @@ export default function EditorScreen() {
     ]);
   }, [activeNote, deleteNote, openTabIds.length, router]);
 
-  const handleDownload = useCallback(async () => {
-    if (!activeNote) {
-      return;
-    }
-
-    const fileName = `${sanitizeFileName(activeNote.title)}.txt`;
-
-    if (Platform.OS === 'web') {
-      try {
-        const blob = new Blob([draftContent], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = fileName;
-        document.body.appendChild(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
-        URL.revokeObjectURL(url);
-        console.log('TXT downloaded on web:', fileName);
-      } catch (error) {
-        console.log('TXT download error on web:', error);
-        Alert.alert('Error', 'No se pudo descargar la nota.');
-      }
-      return;
-    }
-
-    try {
-      if (Platform.OS === 'android' && FileSystem.StorageAccessFramework) {
-        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-        if (!permissions.granted || !permissions.directoryUri) {
-          Alert.alert('Permiso requerido', 'Debes seleccionar la carpeta Descargas para guardar el archivo.');
-          return;
-        }
-
-        const pickedUri = permissions.directoryUri.toLowerCase();
-        if (!pickedUri.includes('download')) {
-          Alert.alert('Carpeta incorrecta', 'Selecciona la carpeta Descargas para guardar el .txt.');
-          return;
-        }
-
-        const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
-          permissions.directoryUri,
-          fileName,
-          'text/plain'
-        );
-        await FileSystem.writeAsStringAsync(fileUri, draftContent, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-
-        console.log('TXT saved in Android Downloads via SAF:', fileUri);
-        Alert.alert('Descarga completada', 'Archivo .txt guardado en Descargas.');
-        return;
-      }
-
-      const baseDir = FileSystem.documentDirectory;
-      if (!baseDir) {
-        throw new Error('documentDirectory no disponible');
-      }
-      const outputPath = `${baseDir}${fileName}`;
-      await FileSystem.writeAsStringAsync(outputPath, draftContent, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-      console.log('TXT saved in app local filesystem:', outputPath);
-      Alert.alert('Guardado local', `En iOS se guardó dentro del almacenamiento de la app:\n${outputPath}`);
-    } catch (error) {
-      console.log('TXT save error on native:', error);
-      Alert.alert('Error', 'No se pudo guardar el archivo .txt en el dispositivo.');
-    }
-  }, [activeNote, draftContent]);
-
   const handleSaveLocalFile = useCallback(async () => {
     if (!activeTabId) {
       return;
@@ -253,6 +181,22 @@ export default function EditorScreen() {
     const offsetY = event.nativeEvent.contentOffset.y;
     lineNumbersRef.current?.scrollTo({ y: offsetY, animated: false });
   }, []);
+
+  const handleScrollContainer = useCallback((event: NativeSyntheticEvent<TextInputScrollEventData>) => {
+    const offsetY = event.nativeEvent.contentOffset.y;
+    lineNumbersRef.current?.scrollTo({ y: offsetY, animated: false });
+  }, []);
+
+  const handleEditorLayout = useCallback((event: LayoutChangeEvent) => {
+    setEditorViewportHeight(event.nativeEvent.layout.height);
+  }, []);
+
+  const handleFavoriteToggle = useCallback(() => {
+    if (!activeNote) {
+      return;
+    }
+    toggleFavorite(activeNote.id);
+  }, [activeNote, toggleFavorite]);
 
   const lines = useMemo(() => {
     if (!activeNote || !settings.showLineNumbers) {
@@ -355,8 +299,14 @@ export default function EditorScreen() {
           flex: 1,
           backgroundColor: colors.surface,
         },
-        textInput: {
+        editorScroll: {
           flex: 1,
+        },
+        editorScrollContent: {
+          flexGrow: 1,
+        },
+        textInput: {
+          minHeight: editorViewportHeight > 0 ? Math.max(editorViewportHeight, editorContentHeight) : editorContentHeight,
           paddingTop: 14,
           paddingBottom: 18,
           paddingLeft: 14,
@@ -414,6 +364,9 @@ export default function EditorScreen() {
           justifyContent: 'space-between',
           gap: 8,
         },
+        toolBtnFavoriteActive: {
+          backgroundColor: '#E539351A',
+        },
         toolBtn: {
           flex: 1,
           minHeight: 42,
@@ -436,7 +389,7 @@ export default function EditorScreen() {
           fontWeight: '600' as const,
         },
       }),
-    [colors, insets, zoomScale]
+    [colors, insets, zoomScale, editorViewportHeight, editorContentHeight]
   );
 
   return (
@@ -497,21 +450,35 @@ export default function EditorScreen() {
                   ))}
                 </ScrollView>
               )}
-              <View style={styles.inputWrap}>
-                <TextInput
-                  style={styles.textInput}
-                  value={draftContent}
-                  onChangeText={handleContentChange}
-                  onScroll={handleEditorScroll}
-                  multiline
-                  scrollEnabled
-                  placeholder="Escribe tu nota aquí..."
-                  placeholderTextColor={colors.placeholder}
-                  selectionColor={colors.accent}
-                  autoCorrect={false}
-                  autoCapitalize="sentences"
-                  testID="note-editor-input"
-                />
+              <View style={styles.inputWrap} onLayout={handleEditorLayout}>
+                <ScrollView
+                  style={styles.editorScroll}
+                  contentContainerStyle={styles.editorScrollContent}
+                  onScroll={handleScrollContainer}
+                  scrollEventThrottle={16}
+                  showsVerticalScrollIndicator
+                  indicatorStyle={colors.bg === '#0B1020' ? 'white' : 'black'}
+                  nestedScrollEnabled
+                  keyboardDismissMode="interactive"
+                  keyboardShouldPersistTaps="handled"
+                  testID="note-editor-scroll"
+                >
+                  <TextInput
+                    style={styles.textInput}
+                    value={draftContent}
+                    onChangeText={handleContentChange}
+                    onScroll={handleEditorScroll}
+                    onContentSizeChange={(event) => setEditorContentHeight(event.nativeEvent.contentSize.height)}
+                    multiline
+                    scrollEnabled={false}
+                    placeholder="Escribe tu nota aquí..."
+                    placeholderTextColor={colors.placeholder}
+                    selectionColor={colors.accent}
+                    autoCorrect={false}
+                    autoCapitalize="sentences"
+                    testID="note-editor-input"
+                  />
+                </ScrollView>
               </View>
             </View>
 
@@ -545,17 +512,17 @@ export default function EditorScreen() {
               </View>
 
               <View style={styles.toolbar}>
-                <TouchableOpacity style={styles.toolBtn} onPress={() => setShowSaveAs(true)} testID="save-as-btn">
-                  <Save size={15} color={colors.accent} />
-                  <Text style={[styles.toolText, { color: colors.accent }]}>Guardar como</Text>
-                </TouchableOpacity>
                 <TouchableOpacity style={styles.toolBtn} onPress={handleSaveLocalFile} testID="save-local-txt-btn">
                   <HardDrive size={15} color={colors.text} />
-                  <Text style={[styles.toolText, { color: colors.text }]}>Guardar local</Text>
+                  <Text style={[styles.toolText, { color: colors.text }]}>Guardar en local</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.toolBtn} onPress={handleDownload} testID="download-txt-btn">
-                  <Download size={15} color={colors.text} />
-                  <Text style={[styles.toolText, { color: colors.text }]}>Descargar .txt</Text>
+                <TouchableOpacity
+                  style={[styles.toolBtn, activeNote.isFavorite ? styles.toolBtnFavoriteActive : null]}
+                  onPress={handleFavoriteToggle}
+                  testID="toggle-favorite-btn"
+                >
+                  <Heart size={15} color="#E53935" fill={activeNote.isFavorite ? '#E53935' : 'transparent'} />
+                  <Text style={[styles.toolText, { color: '#E53935' }]}>Agregar a favoritos</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.toolBtn, styles.toolBtnDanger]}
