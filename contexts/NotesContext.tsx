@@ -11,6 +11,7 @@ import { supabase } from '@/constants/supabase';
 const NOTES_KEY = '@notes_app_notes';
 const LOCAL_FILES_KEY = '@notes_app_local_files';
 const SETTINGS_KEY = '@notes_app_settings';
+const FAVORITE_SYNCED_NOTE_IDS_KEY = '@notes_app_favorite_synced_note_ids';
 const MAX_DAILY_NOTES = 10;
 const MAX_OPEN_TABS = 10;
 const LOCAL_FILES_DIR_NAME = 'bnw-local-files';
@@ -173,6 +174,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     showLineNumbers: false,
     cookieAccepted: false,
   });
+  const [favoriteSyncedNoteIds, setFavoriteSyncedNoteIds] = useState<string[]>([]);
   const [auth, setAuth] = useState<AuthState>({
     session: null,
     isLoading: true,
@@ -202,6 +204,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
           createdAt: row.created_at,
           updatedAt: row.updated_at,
           storageType: 'synced' as const,
+          isFavorite: favoriteSyncedNoteIds.includes(row.id),
         }));
       }
       const stored = await AsyncStorage.getItem(NOTES_KEY);
@@ -209,9 +212,18 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       return parsed.map((note) => ({
         ...note,
         storageType: 'synced' as const,
+        isFavorite: note.isFavorite ?? false,
       }));
     },
     enabled: !auth.isLoading,
+  });
+
+  const favoriteSyncedIdsQuery = useQuery({
+    queryKey: ['favoriteSyncedNoteIds'],
+    queryFn: async () => {
+      const stored = await AsyncStorage.getItem(FAVORITE_SYNCED_NOTE_IDS_KEY);
+      return stored ? (JSON.parse(stored) as string[]) : [];
+    },
   });
 
   const localFilesQuery = useQuery({
@@ -222,6 +234,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       return parsed.map((note) => ({
         ...note,
         storageType: 'local' as const,
+        isFavorite: note.isFavorite ?? false,
       }));
     },
   });
@@ -239,6 +252,21 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       setSyncedNotes(notesQuery.data);
     }
   }, [notesQuery.data]);
+
+  useEffect(() => {
+    if (favoriteSyncedIdsQuery.data) {
+      setFavoriteSyncedNoteIds(favoriteSyncedIdsQuery.data);
+    }
+  }, [favoriteSyncedIdsQuery.data]);
+
+  useEffect(() => {
+    setSyncedNotes((prev) =>
+      prev.map((note) => ({
+        ...note,
+        isFavorite: favoriteSyncedNoteIds.includes(note.id),
+      }))
+    );
+  }, [favoriteSyncedNoteIds]);
 
   useEffect(() => {
     if (localFilesQuery.data) {
@@ -343,6 +371,16 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     },
   });
 
+  const persistFavoriteSyncedIds = useMutation({
+    mutationFn: async (updated: string[]) => {
+      await AsyncStorage.setItem(FAVORITE_SYNCED_NOTE_IDS_KEY, JSON.stringify(updated));
+      return updated;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['favoriteSyncedNoteIds'] });
+    },
+  });
+
   const persistSettings = useMutation({
     mutationFn: async (updated: Settings) => {
       await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(updated));
@@ -376,6 +414,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       storageType: 'synced',
+      isFavorite: false,
     };
     const updated = [note, ...syncedNotes];
     setSyncedNotes(updated);
@@ -425,6 +464,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
         createdAt: now,
         updatedAt: now,
         storageType: 'local',
+        isFavorite: false,
         localFileUri,
       };
       const updated = [note, ...localFileNotes];
@@ -702,6 +742,30 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     }
   }, []);
 
+  const toggleFavorite = useCallback(
+    (id: string) => {
+      const localTarget = localFileNotes.find((note) => note.id === id);
+      if (localTarget) {
+        const updatedLocalNotes = localFileNotes.map((note) =>
+          note.id === id ? { ...note, isFavorite: !note.isFavorite, updatedAt: new Date().toISOString() } : note
+        );
+        setLocalFileNotes(updatedLocalNotes);
+        persistLocalFiles.mutate(updatedLocalNotes);
+        return;
+      }
+
+      const updatedSyncedNotes = syncedNotes.map((note) =>
+        note.id === id ? { ...note, isFavorite: !note.isFavorite, updatedAt: new Date().toISOString() } : note
+      );
+      const nextFavoriteIds = updatedSyncedNotes.filter((note) => note.isFavorite).map((note) => note.id);
+      setSyncedNotes(updatedSyncedNotes);
+      setFavoriteSyncedNoteIds(nextFavoriteIds);
+      persistFavoriteSyncedIds.mutate(nextFavoriteIds);
+      persistSyncedNotes.mutate(updatedSyncedNotes);
+    },
+    [localFileNotes, syncedNotes, persistLocalFiles, persistFavoriteSyncedIds, persistSyncedNotes]
+  );
+
   const deleteNote = useCallback(
     (id: string) => {
       const localTarget = localFileNotes.find((note) => note.id === id);
@@ -716,7 +780,10 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
         }
       } else {
         const updatedSyncedNotes = syncedNotes.filter((note) => note.id !== id);
+        const nextFavoriteIds = favoriteSyncedNoteIds.filter((noteId) => noteId !== id);
         setSyncedNotes(updatedSyncedNotes);
+        setFavoriteSyncedNoteIds(nextFavoriteIds);
+        persistFavoriteSyncedIds.mutate(nextFavoriteIds);
         persistSyncedNotes.mutate(updatedSyncedNotes);
         if (auth.session?.user?.id) {
           supabase
@@ -737,7 +804,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
         setActiveTabId(openTabIds.find((tabId) => tabId !== id) ?? null);
       }
     },
-    [localFileNotes, syncedNotes, persistLocalFiles, persistSyncedNotes, auth.session?.user?.id, activeTabId, openTabIds]
+    [localFileNotes, syncedNotes, persistLocalFiles, persistFavoriteSyncedIds, persistSyncedNotes, auth.session?.user?.id, activeTabId, openTabIds, favoriteSyncedNoteIds]
   );
 
   const openTab = useCallback(
@@ -818,7 +885,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       settings,
       canCreateNote,
       notesCreatedToday,
-      isLoading: notesQuery.isLoading || localFilesQuery.isLoading || auth.isLoading,
+      isLoading: notesQuery.isLoading || favoriteSyncedIdsQuery.isLoading || localFilesQuery.isLoading || auth.isLoading,
       addNote,
       updateNote,
       deleteNote,
@@ -842,6 +909,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       signUpCooldownUntil,
       importLocalTextFile,
       saveNoteAsLocalFile,
+      toggleFavorite,
     }),
     [
       notes,
@@ -851,6 +919,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       canCreateNote,
       notesCreatedToday,
       notesQuery.isLoading,
+      favoriteSyncedIdsQuery.isLoading,
       localFilesQuery.isLoading,
       auth,
       addNote,
@@ -875,6 +944,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       signUpCooldownUntil,
       importLocalTextFile,
       saveNoteAsLocalFile,
+      toggleFavorite,
     ]
   );
 });
