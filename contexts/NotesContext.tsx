@@ -4,6 +4,7 @@ import { Platform, Alert } from 'react-native';
 import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import createContextHook from '@nkzw/create-context-hook';
 import * as DocumentPicker from 'expo-document-picker';
+import { Directory, File } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Note } from '@/types/notes';
 import { supabase } from '@/constants/supabase';
@@ -14,7 +15,6 @@ const SETTINGS_KEY = '@notes_app_settings';
 const FAVORITE_SYNCED_NOTE_IDS_KEY = '@notes_app_favorite_synced_note_ids';
 const MAX_DAILY_NOTES = 10;
 const MAX_OPEN_TABS = 10;
-const LOCAL_FILES_DIR_NAME = 'bnw-local-files';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -64,6 +64,13 @@ interface AuthState {
   isLoading: boolean;
   error: string | null;
 }
+
+interface LocalNoteWriteResult {
+  filePath: string;
+  recoveredMissingFile: boolean;
+}
+
+type PickedDirectory = Awaited<ReturnType<typeof Directory.pickDirectoryAsync>>;
 
 const DEFAULT_SIGN_UP_COOLDOWN_MS = 60_000;
 const MAX_SIGN_UP_COOLDOWN_MS = 3_600_000;
@@ -140,17 +147,15 @@ interface NotesPayload {
   updated_at: string;
 }
 
-async function ensureLocalFilesDirectory(): Promise<string | null> {
-  const baseDir = FileSystem.documentDirectory;
-  if (!baseDir) {
-    return null;
-  }
-  const directoryUri = `${baseDir}${LOCAL_FILES_DIR_NAME}/`;
-  const info = await FileSystem.getInfoAsync(directoryUri);
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
-  }
-  return directoryUri;
+function normalizeLocalNote(note: Note): Note {
+  const normalizedFilePath = note.filePath ?? note.localFileUri;
+  return {
+    ...note,
+    storageType: 'local',
+    isFavorite: note.isFavorite ?? false,
+    filePath: normalizedFilePath,
+    localFileUri: normalizedFilePath,
+  };
 }
 
 async function readPickedTextAsset(asset: DocumentPicker.DocumentPickerAsset): Promise<string> {
@@ -162,6 +167,69 @@ async function readPickedTextAsset(asset: DocumentPicker.DocumentPickerAsset): P
     return response.text();
   }
   return FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.UTF8 });
+}
+
+async function pickDirectoryForLocalSave(initialUri?: string): Promise<PickedDirectory | null> {
+  if (Platform.OS === 'web') {
+    return null;
+  }
+
+  try {
+    console.log('Opening system directory picker. Initial URI:', initialUri ?? 'none');
+    const pickedDirectory = await Directory.pickDirectoryAsync(initialUri);
+    console.log('Directory picker selection URI:', pickedDirectory.uri);
+    return pickedDirectory;
+  } catch (error) {
+    console.log('Directory picker error or cancel:', error);
+    return null;
+  }
+}
+
+function createTargetFileInDirectory(directory: PickedDirectory, title: string) {
+  const baseFileName = sanitizeFileName(title).replace(/\.txt$/i, '') || 'nota';
+  const finalFileName = `${baseFileName}.txt`;
+  return directory.createFile(finalFileName, 'text/plain');
+}
+
+async function writeTextFileAtPath(filePath: string, content: string): Promise<void> {
+  const file = new File(filePath);
+  file.write(content);
+}
+
+async function createNoteFileInDirectory(directory: PickedDirectory, title: string, content: string): Promise<string> {
+  const targetFile = createTargetFileInDirectory(directory, title);
+  targetFile.write(content);
+  console.log('Created local note file at:', targetFile.uri);
+  return targetFile.uri;
+}
+
+async function saveNativeLocalNote(note: Note, forceRepick: boolean): Promise<LocalNoteWriteResult> {
+  const existingFilePath = !forceRepick ? note.filePath ?? note.localFileUri : undefined;
+
+  if (existingFilePath) {
+    try {
+      await writeTextFileAtPath(existingFilePath, note.content);
+      console.log('Updated existing local note file:', existingFilePath);
+      return {
+        filePath: existingFilePath,
+        recoveredMissingFile: false,
+      };
+    } catch (error) {
+      console.log('Existing local note file write failed, will repick directory:', existingFilePath, error);
+    }
+  }
+
+  const initialDirectoryUri = existingFilePath ? existingFilePath.slice(0, existingFilePath.lastIndexOf('/') + 1) : undefined;
+  const pickedDirectory = await pickDirectoryForLocalSave(initialDirectoryUri);
+  if (!pickedDirectory) {
+    throw new Error('DIRECTORY_PICK_CANCELLED');
+  }
+
+  const nextFilePath = await createNoteFileInDirectory(pickedDirectory, note.title, note.content);
+  return {
+    filePath: nextFilePath,
+    recoveredMissingFile: Boolean(existingFilePath),
+  };
 }
 
 export const [NotesProvider, useNotes] = createContextHook(() => {
@@ -231,11 +299,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     queryFn: async () => {
       const stored = await AsyncStorage.getItem(LOCAL_FILES_KEY);
       const parsed = stored ? (JSON.parse(stored) as Note[]) : [];
-      return parsed.map((note) => ({
-        ...note,
-        storageType: 'local' as const,
-        isFavorite: note.isFavorite ?? false,
-      }));
+      return parsed.map(normalizeLocalNote);
     },
   });
 
@@ -363,7 +427,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
 
   const persistLocalFiles = useMutation({
     mutationFn: async (updated: Note[]) => {
-      await AsyncStorage.setItem(LOCAL_FILES_KEY, JSON.stringify(updated));
+      await AsyncStorage.setItem(LOCAL_FILES_KEY, JSON.stringify(updated.map(normalizeLocalNote)));
       return updated;
     },
     onSuccess: () => {
@@ -444,20 +508,9 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       const content = await readPickedTextAsset(asset);
       const now = new Date().toISOString();
       const title = getFileTitle(asset.name);
-      let localFileUri: string | undefined;
+      const importedFilePath = Platform.OS === 'web' ? undefined : asset.uri;
 
-      if (Platform.OS !== 'web') {
-        const directoryUri = await ensureLocalFilesDirectory();
-        if (!directoryUri) {
-          throw new Error('documentDirectory no disponible');
-        }
-        localFileUri = `${directoryUri}${generateId()}-${sanitizeFileName(title)}.txt`;
-        await FileSystem.writeAsStringAsync(localFileUri, content, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-      }
-
-      const note: Note = {
+      const note: Note = normalizeLocalNote({
         id: generateId(),
         title,
         content,
@@ -465,14 +518,15 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
         updatedAt: now,
         storageType: 'local',
         isFavorite: false,
-        localFileUri,
-      };
+        filePath: importedFilePath,
+        localFileUri: importedFilePath,
+      });
       const updated = [note, ...localFileNotes];
       setLocalFileNotes(updated);
       persistLocalFiles.mutate(updated);
       setOpenTabIds((prev) => (prev.includes(note.id) ? prev : [...prev.slice(-(MAX_OPEN_TABS - 1)), note.id]));
       setActiveTabId(note.id);
-      console.log('Imported local TXT file:', asset.name, 'as note:', note.id);
+      console.log('Imported local TXT file:', asset.name, 'as note:', note.id, 'path:', importedFilePath ?? 'web-temporary');
       return note;
     } catch (error) {
       console.log('Local TXT import error:', error);
@@ -488,25 +542,26 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
         return null;
       }
 
-      const safeFileName = `${sanitizeFileName(sourceNote.title)}.txt`;
+      const preparedNote = normalizeLocalNote(sourceNote);
 
       try {
         if (Platform.OS === 'web') {
-          triggerWebDownload(safeFileName, sourceNote.content);
-          if (sourceNote.storageType === 'local') {
-            console.log('Downloaded existing local TXT on web:', sourceNote.id);
+          const safeFileName = `${sanitizeFileName(preparedNote.title)}.txt`;
+          triggerWebDownload(safeFileName, preparedNote.content);
+          if (preparedNote.storageType === 'local') {
+            console.log('Downloaded existing local TXT on web:', preparedNote.id);
             Alert.alert('Archivo guardado', 'Se descargó el archivo .txt local.');
-            return sourceNote;
+            return preparedNote;
           }
 
           const now = new Date().toISOString();
-          const localCopy: Note = {
-            ...sourceNote,
+          const localCopy: Note = normalizeLocalNote({
+            ...preparedNote,
             id: generateId(),
             createdAt: now,
             updatedAt: now,
             storageType: 'local',
-          };
+          });
           const updated = [localCopy, ...localFileNotes];
           setLocalFileNotes(updated);
           persistLocalFiles.mutate(updated);
@@ -515,49 +570,49 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
           return localCopy;
         }
 
-        const directoryUri = await ensureLocalFilesDirectory();
-        if (!directoryUri) {
-          throw new Error('documentDirectory no disponible');
-        }
+        const saveResult = await saveNativeLocalNote(preparedNote, false);
+        const now = new Date().toISOString();
 
-        if (sourceNote.storageType === 'local') {
-          const targetUri = sourceNote.localFileUri ?? `${directoryUri}${generateId()}-${safeFileName}`;
-          await FileSystem.writeAsStringAsync(targetUri, sourceNote.content, {
-            encoding: FileSystem.EncodingType.UTF8,
+        if (preparedNote.storageType === 'local') {
+          const updatedLocalNote: Note = normalizeLocalNote({
+            ...preparedNote,
+            updatedAt: now,
+            filePath: saveResult.filePath,
+            localFileUri: saveResult.filePath,
           });
-          const updatedLocalNote: Note = {
-            ...sourceNote,
-            localFileUri: targetUri,
-            updatedAt: new Date().toISOString(),
-          };
-          const updated = localFileNotes.map((note) => (note.id === sourceNote.id ? updatedLocalNote : note));
+          const updated = localFileNotes.map((note) => (note.id === preparedNote.id ? updatedLocalNote : note));
           setLocalFileNotes(updated);
           persistLocalFiles.mutate(updated);
-          console.log('Saved local TXT note to device file:', targetUri);
-          Alert.alert('Archivo guardado', 'El archivo .txt local se actualizó en el dispositivo.');
+          console.log('Saved local TXT note to selected file path:', saveResult.filePath);
+          Alert.alert(
+            'Archivo guardado',
+            saveResult.recoveredMissingFile
+              ? 'El archivo anterior no estaba disponible. Se eligió una nueva ubicación y se guardó la nota.'
+              : 'El archivo .txt local se actualizó en el dispositivo.'
+          );
           return updatedLocalNote;
         }
 
-        const localFileUri = `${directoryUri}${generateId()}-${safeFileName}`;
-        await FileSystem.writeAsStringAsync(localFileUri, sourceNote.content, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        const now = new Date().toISOString();
-        const localCopy: Note = {
-          ...sourceNote,
+        const localCopy: Note = normalizeLocalNote({
+          ...preparedNote,
           id: generateId(),
           createdAt: now,
           updatedAt: now,
           storageType: 'local',
-          localFileUri,
-        };
+          filePath: saveResult.filePath,
+          localFileUri: saveResult.filePath,
+        });
         const updated = [localCopy, ...localFileNotes];
         setLocalFileNotes(updated);
         persistLocalFiles.mutate(updated);
-        console.log('Created local TXT copy from synced note:', localFileUri, 'new note:', localCopy.id);
-        Alert.alert('Archivo guardado', 'Se creó una copia local .txt en el dispositivo.');
+        console.log('Created local TXT copy from synced note at path:', saveResult.filePath, 'new note:', localCopy.id);
+        Alert.alert('Archivo guardado', 'Se creó una copia local .txt en la carpeta elegida.');
         return localCopy;
       } catch (error) {
+        if (error instanceof Error && error.message === 'DIRECTORY_PICK_CANCELLED') {
+          console.log('Local save cancelled by user');
+          return null;
+        }
         console.log('Save note as local TXT error:', error);
         Alert.alert('Error', 'No se pudo guardar el archivo .txt local.');
         return null;
@@ -571,21 +626,10 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       const localTarget = localFileNotes.find((note) => note.id === id);
       if (localTarget) {
         const updatedLocalNotes = localFileNotes.map((note) =>
-          note.id === id ? { ...note, ...changes, updatedAt: new Date().toISOString() } : note
+          note.id === id ? normalizeLocalNote({ ...note, ...changes, updatedAt: new Date().toISOString() }) : note
         );
-        const updatedLocalNote = updatedLocalNotes.find((note) => note.id === id);
         setLocalFileNotes(updatedLocalNotes);
         persistLocalFiles.mutate(updatedLocalNotes);
-
-        if (Platform.OS !== 'web' && updatedLocalNote?.localFileUri && typeof changes.content === 'string') {
-          FileSystem.writeAsStringAsync(updatedLocalNote.localFileUri, updatedLocalNote.content, {
-            encoding: FileSystem.EncodingType.UTF8,
-          }).then(() => {
-            console.log('Persisted local TXT change to device file:', updatedLocalNote.localFileUri);
-          }).catch((error: unknown) => {
-            console.log('Persist local TXT file write error:', error);
-          });
-        }
         return;
       }
 
@@ -747,7 +791,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       const localTarget = localFileNotes.find((note) => note.id === id);
       if (localTarget) {
         const updatedLocalNotes = localFileNotes.map((note) =>
-          note.id === id ? { ...note, isFavorite: !note.isFavorite, updatedAt: new Date().toISOString() } : note
+          note.id === id ? normalizeLocalNote({ ...note, isFavorite: !note.isFavorite, updatedAt: new Date().toISOString() }) : note
         );
         setLocalFileNotes(updatedLocalNotes);
         persistLocalFiles.mutate(updatedLocalNotes);
@@ -773,10 +817,13 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
         const updatedLocalNotes = localFileNotes.filter((note) => note.id !== id);
         setLocalFileNotes(updatedLocalNotes);
         persistLocalFiles.mutate(updatedLocalNotes);
-        if (Platform.OS !== 'web' && localTarget.localFileUri) {
-          FileSystem.deleteAsync(localTarget.localFileUri, { idempotent: true }).catch((error: unknown) => {
+        if (Platform.OS !== 'web' && localTarget.filePath) {
+          try {
+            const file = new File(localTarget.filePath);
+            file.delete();
+          } catch (error) {
             console.log('Local TXT delete file error:', error);
-          });
+          }
         }
       } else {
         const updatedSyncedNotes = syncedNotes.filter((note) => note.id !== id);
