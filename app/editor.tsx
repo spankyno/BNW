@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Save, Trash2, ZoomIn, ZoomOut, Cloud, HardDrive, Heart } from 'lucide-react-native';
+import { ArrowLeft, Save, Trash2, ZoomIn, ZoomOut, Cloud, HardDrive, Heart, Undo2 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useNotes } from '@/contexts/NotesContext';
 import NoteTabBar from '@/components/NoteTabBar';
@@ -29,6 +29,7 @@ const BASE_LINE_HEIGHT = 22;
 const BASE_LINE_NUMBER_SIZE = 13;
 const BASE_LINE_NUMBER_HEIGHT = 20;
 const SAVE_DEBOUNCE_MS = 2000;
+const MAX_UNDO_HISTORY = 100;
 
 export default function EditorScreen() {
   const { colors } = useTheme();
@@ -50,6 +51,8 @@ export default function EditorScreen() {
   const { noteId } = useLocalSearchParams<{ noteId: string }>();
   const lineNumbersRef = useRef<ScrollView | null>(null);
   const lastSavedContentRef = useRef<string>('');
+  const undoHistoryRef = useRef<string[]>([]);
+  const suppressHistoryRef = useRef<boolean>(false);
 
   const [showSaveAs, setShowSaveAs] = useState<boolean>(false);
   const [zoomScale, setZoomScale] = useState<number>(1);
@@ -57,6 +60,7 @@ export default function EditorScreen() {
   const [isTyping, setIsTyping] = useState<boolean>(false);
   const [editorViewportHeight, setEditorViewportHeight] = useState<number>(0);
   const [editorContentHeight, setEditorContentHeight] = useState<number>(0);
+  const [_undoVersion, setUndoVersion] = useState<number>(0);
 
   useEffect(() => {
     if (noteId) {
@@ -78,16 +82,23 @@ export default function EditorScreen() {
     [openTabIds, getNoteById]
   );
 
+  const isLocalNote = activeNote?.storageType === 'local';
+  const canUndo = undoHistoryRef.current.length > 0;
+
   useEffect(() => {
     if (!activeNote) {
       setDraftContent('');
       setIsTyping(false);
       lastSavedContentRef.current = '';
+      undoHistoryRef.current = [];
+      setUndoVersion((prev) => prev + 1);
       return;
     }
     setDraftContent(activeNote.content);
     setIsTyping(false);
     lastSavedContentRef.current = activeNote.content;
+    undoHistoryRef.current = [];
+    setUndoVersion((prev) => prev + 1);
   }, [activeNote]);
 
   useEffect(() => {
@@ -114,8 +125,32 @@ export default function EditorScreen() {
   }, [activeTabId, activeNote, draftContent, updateNote]);
 
   const handleContentChange = useCallback((text: string) => {
-    setDraftContent(text);
+    setDraftContent((previous) => {
+      if (!suppressHistoryRef.current && text !== previous) {
+        const nextHistory = [...undoHistoryRef.current, previous].slice(-MAX_UNDO_HISTORY);
+        undoHistoryRef.current = nextHistory;
+        setUndoVersion((prev) => prev + 1);
+        console.log('Undo history push. Steps:', nextHistory.length);
+      }
+
+      suppressHistoryRef.current = false;
+      return text;
+    });
     setIsTyping(text !== lastSavedContentRef.current);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const previousValue = undoHistoryRef.current[undoHistoryRef.current.length - 1];
+    if (typeof previousValue !== 'string') {
+      return;
+    }
+
+    undoHistoryRef.current = undoHistoryRef.current.slice(0, -1);
+    suppressHistoryRef.current = true;
+    setDraftContent(previousValue);
+    setIsTyping(previousValue !== lastSavedContentRef.current);
+    setUndoVersion((prev) => prev + 1);
+    console.log('Undo applied. Remaining steps:', undoHistoryRef.current.length);
   }, []);
 
   const handleSaveAs = useCallback(
@@ -212,7 +247,7 @@ export default function EditorScreen() {
     }
     if (activeNote.storageType === 'local') {
       return {
-        label: 'Archivo local',
+        label: activeNote.filePath ? 'Archivo local vinculado' : 'Archivo local sin ruta',
         icon: <HardDrive size={14} color={colors.textSecondary} />,
       };
     }
@@ -264,13 +299,17 @@ export default function EditorScreen() {
           fontWeight: '600' as const,
           color: colors.textSecondary,
         },
+        headerActions: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+        },
         headerAction: {
           width: 38,
           height: 38,
           borderRadius: 10,
           alignItems: 'center',
           justifyContent: 'center',
-          marginLeft: 4,
         },
         editorShell: {
           flex: 1,
@@ -407,13 +446,32 @@ export default function EditorScreen() {
             <Text style={styles.headerMetaText}>{storageMeta.label}</Text>
           </View>
         </View>
-        <TouchableOpacity
-          style={[styles.headerAction, { backgroundColor: colors.accentLight }]}
-          onPress={() => setShowSaveAs(true)}
-          testID="save-note-top"
-        >
-          <Save size={18} color={colors.accent} />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={[styles.headerAction, { backgroundColor: canUndo ? colors.surfaceSecondary : colors.surfaceSecondary + '88' }]}
+            onPress={handleUndo}
+            disabled={!canUndo}
+            testID="undo-note-top"
+          >
+            <Undo2 size={18} color={canUndo ? colors.text : colors.placeholder} />
+          </TouchableOpacity>
+          {isLocalNote ? (
+            <TouchableOpacity
+              style={[styles.headerAction, { backgroundColor: colors.accentLight }]}
+              onPress={handleSaveLocalFile}
+              testID="save-note-top"
+            >
+              <Save size={18} color={colors.accent} />
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity
+            style={[styles.headerAction, { backgroundColor: colors.accentLight }]}
+            onPress={() => setShowSaveAs(true)}
+            testID="rename-note-top"
+          >
+            <Text style={{ color: colors.accent, fontSize: 11, fontWeight: '800' as const }}>TXT</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <NoteTabBar
@@ -485,7 +543,7 @@ export default function EditorScreen() {
             <View style={styles.bottomPanel}>
               <View style={styles.topControlRow}>
                 <Text style={styles.autoSaveText} testID="autosave-status-text">
-                  {isTyping ? 'Escribiendo…' : 'Guardado'}
+                  {isLocalNote ? (isTyping ? 'Escribiendo…' : 'Listo para guardar') : isTyping ? 'Escribiendo…' : 'Guardado'}
                 </Text>
 
                 <View style={styles.zoomControlWrap}>
@@ -512,10 +570,12 @@ export default function EditorScreen() {
               </View>
 
               <View style={styles.toolbar}>
-                <TouchableOpacity style={styles.toolBtn} onPress={handleSaveLocalFile} testID="save-local-txt-btn">
-                  <HardDrive size={15} color={colors.text} />
-                  <Text style={[styles.toolText, { color: colors.text }]}>Guardar en local</Text>
-                </TouchableOpacity>
+                {isLocalNote ? (
+                  <TouchableOpacity style={styles.toolBtn} onPress={handleSaveLocalFile} testID="save-local-txt-btn">
+                    <HardDrive size={15} color={colors.text} />
+                    <Text style={[styles.toolText, { color: colors.text }]}>Guardar en local</Text>
+                  </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity
                   style={[styles.toolBtn, activeNote.isFavorite ? styles.toolBtnFavoriteActive : null]}
                   onPress={handleFavoriteToggle}
