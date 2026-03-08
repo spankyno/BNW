@@ -8,6 +8,7 @@ export interface Note {
   updatedAt: string;
   storageType: NoteStorageType;
   isFavorite: boolean;
+  filePath?: string;
   localFileUri?: string;
 }
 
