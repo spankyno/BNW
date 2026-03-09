@@ -5,7 +5,7 @@ import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import createContextHook from '@nkzw/create-context-hook';
 import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File } from 'expo-file-system';
-import * as FileSystem from 'expo-file-system/legacy';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { Note } from '@/types/notes';
 import { supabase } from '@/constants/supabase';
 
@@ -166,17 +166,24 @@ async function readPickedTextAsset(asset: DocumentPicker.DocumentPickerAsset): P
     const response = await fetch(asset.uri);
     return response.text();
   }
-  return FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.UTF8 });
+
+  if (asset.uri.startsWith('content://')) {
+    return LegacyFileSystem.StorageAccessFramework.readAsStringAsync(asset.uri, {
+      encoding: LegacyFileSystem.EncodingType.UTF8,
+    });
+  }
+
+  return new File(asset.uri).text();
 }
 
-async function pickDirectoryForLocalSave(initialUri?: string): Promise<PickedDirectory | null> {
+async function pickDirectoryForLocalSave(): Promise<PickedDirectory | null> {
   if (Platform.OS === 'web') {
     return null;
   }
 
   try {
-    console.log('Opening system directory picker. Initial URI:', initialUri ?? 'none');
-    const pickedDirectory = await Directory.pickDirectoryAsync(initialUri);
+    console.log('Opening system directory picker for local note save');
+    const pickedDirectory = await Directory.pickDirectoryAsync();
     console.log('Directory picker selection URI:', pickedDirectory.uri);
     return pickedDirectory;
   } catch (error) {
@@ -185,22 +192,72 @@ async function pickDirectoryForLocalSave(initialUri?: string): Promise<PickedDir
   }
 }
 
-function createTargetFileInDirectory(directory: PickedDirectory, title: string) {
+async function ensureDirectoryUri(directoryUri: string): Promise<void> {
+  if (directoryUri.startsWith('content://')) {
+    return;
+  }
+
+  const directory = new Directory(directoryUri);
+  if (!directory.exists) {
+    directory.create({ intermediates: true });
+  }
+}
+
+async function createTargetFileUri(directoryUri: string, title: string): Promise<string> {
   const baseFileName = sanitizeFileName(title).replace(/\.txt$/i, '') || 'nota';
-  const finalFileName = `${baseFileName}.txt`;
-  return directory.createFile(finalFileName, 'text/plain');
+
+  if (directoryUri.startsWith('content://')) {
+    let fileName = baseFileName;
+    let attempt = 0;
+
+    while (attempt < 100) {
+      try {
+        const createdUri = await LegacyFileSystem.StorageAccessFramework.createFileAsync(
+          directoryUri,
+          fileName,
+          'text/plain'
+        );
+        return createdUri;
+      } catch (error) {
+        attempt += 1;
+        fileName = `${baseFileName}_${attempt}`;
+        console.log('Retrying SAF file creation with a new name:', fileName, error);
+      }
+    }
+
+    throw new Error('LOCAL_FILE_CREATE_FAILED');
+  }
+
+  await ensureDirectoryUri(directoryUri);
+  const safeFileName = `${baseFileName}.txt`;
+  const fileUri = `${directoryUri.replace(/\/$/, '')}/${safeFileName}`;
+  const file = new File(fileUri);
+  if (!file.exists) {
+    file.create({ intermediates: true });
+  }
+  return file.uri;
 }
 
 async function writeTextFileAtPath(filePath: string, content: string): Promise<void> {
+  if (filePath.startsWith('content://')) {
+    await LegacyFileSystem.StorageAccessFramework.writeAsStringAsync(filePath, content, {
+      encoding: LegacyFileSystem.EncodingType.UTF8,
+    });
+    return;
+  }
+
   const file = new File(filePath);
+  if (!file.exists) {
+    file.create({ intermediates: true });
+  }
   file.write(content);
 }
 
-async function createNoteFileInDirectory(directory: PickedDirectory, title: string, content: string): Promise<string> {
-  const targetFile = createTargetFileInDirectory(directory, title);
-  targetFile.write(content);
-  console.log('Created local note file at:', targetFile.uri);
-  return targetFile.uri;
+async function createNoteFileInDirectory(directoryUri: string, title: string, content: string): Promise<string> {
+  const targetFileUri = await createTargetFileUri(directoryUri, title);
+  await writeTextFileAtPath(targetFileUri, content);
+  console.log('Created local note file at:', targetFileUri);
+  return targetFileUri;
 }
 
 async function saveNativeLocalNote(note: Note, forceRepick: boolean): Promise<LocalNoteWriteResult> {
@@ -219,13 +276,12 @@ async function saveNativeLocalNote(note: Note, forceRepick: boolean): Promise<Lo
     }
   }
 
-  const initialDirectoryUri = existingFilePath ? existingFilePath.slice(0, existingFilePath.lastIndexOf('/') + 1) : undefined;
-  const pickedDirectory = await pickDirectoryForLocalSave(initialDirectoryUri);
+  const pickedDirectory = await pickDirectoryForLocalSave();
   if (!pickedDirectory) {
     throw new Error('DIRECTORY_PICK_CANCELLED');
   }
 
-  const nextFilePath = await createNoteFileInDirectory(pickedDirectory, note.title, note.content);
+  const nextFilePath = await createNoteFileInDirectory(pickedDirectory.uri, note.title, note.content);
   return {
     filePath: nextFilePath,
     recoveredMissingFile: Boolean(existingFilePath),
@@ -492,12 +548,59 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     return note;
   }, [canCreateNote, syncedNotes, persistSyncedNotes, openTabIds.length]);
 
+  const createLocalNote = useCallback(async (): Promise<Note | null> => {
+    try {
+      const now = new Date();
+      const baseNote = normalizeLocalNote({
+        id: generateId(),
+        title: `Nota local ${formatDateTime(now)}`,
+        content: '',
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        storageType: 'local',
+        isFavorite: false,
+      });
+
+      if (Platform.OS === 'web') {
+        const updated = [baseNote, ...localFileNotes];
+        setLocalFileNotes(updated);
+        persistLocalFiles.mutate(updated);
+        setOpenTabIds((prev) => (prev.includes(baseNote.id) ? prev : [...prev.slice(-(MAX_OPEN_TABS - 1)), baseNote.id]));
+        setActiveTabId(baseNote.id);
+        console.log('Created local note on web without filesystem path:', baseNote.id);
+        return baseNote;
+      }
+
+      const saveResult = await saveNativeLocalNote(baseNote, true);
+      const localNote = normalizeLocalNote({
+        ...baseNote,
+        filePath: saveResult.filePath,
+        localFileUri: saveResult.filePath,
+      });
+      const updated = [localNote, ...localFileNotes];
+      setLocalFileNotes(updated);
+      persistLocalFiles.mutate(updated);
+      setOpenTabIds((prev) => (prev.includes(localNote.id) ? prev : [...prev.slice(-(MAX_OPEN_TABS - 1)), localNote.id]));
+      setActiveTabId(localNote.id);
+      console.log('Created brand new local note:', localNote.id, 'path:', localNote.filePath ?? 'none');
+      return localNote;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'DIRECTORY_PICK_CANCELLED') {
+        console.log('Local note creation cancelled by user');
+        return null;
+      }
+      console.log('Create local note error:', error);
+      Alert.alert('Error', 'No se pudo crear la nota local en la carpeta elegida.');
+      return null;
+    }
+  }, [localFileNotes, persistLocalFiles]);
+
   const importLocalTextFile = useCallback(async (): Promise<Note | null> => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['text/plain', 'text/*'],
         multiple: false,
-        copyToCacheDirectory: true,
+        copyToCacheDirectory: false,
       });
       if (result.canceled || !result.assets?.[0]) {
         console.log('Local TXT import cancelled');
@@ -955,6 +1058,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       signOut,
       signUpCooldownUntil,
       importLocalTextFile,
+      createLocalNote,
       saveNoteAsLocalFile,
       toggleFavorite,
     }),
@@ -990,6 +1094,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       signOut,
       signUpCooldownUntil,
       importLocalTextFile,
+      createLocalNote,
       saveNoteAsLocalFile,
       toggleFavorite,
     ]
