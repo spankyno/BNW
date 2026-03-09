@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback } from 'react';
+import React, { useMemo, useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -7,9 +7,10 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Plus, FileText, Trash2, Cloud, Save, FolderOpen, Heart } from 'lucide-react-native';
+import { Plus, FileText, Trash2, Cloud, Save, FolderOpen, Heart, X } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useNotes } from '@/contexts/NotesContext';
 import CookieBanner from '@/components/CookieBanner';
@@ -28,7 +29,7 @@ function formatDate(iso: string): string {
 function getPreview(content: string): string {
   const trimmed = content.trim();
   if (!trimmed) return 'Nota vacía';
-  return trimmed.length > 88 ? trimmed.slice(0, 88) + '...' : trimmed;
+  return trimmed.length > 88 ? `${trimmed.slice(0, 88)}...` : trimmed;
 }
 
 export default function NotesListScreen() {
@@ -39,6 +40,7 @@ export default function NotesListScreen() {
     canCreateNote,
     notesCreatedToday,
     addNote,
+    createLocalNote,
     deleteNote,
     openTab,
     settings,
@@ -49,24 +51,33 @@ export default function NotesListScreen() {
   const syncedNotesCount = useMemo(() => notes.filter((note) => note.storageType === 'synced').length, [notes]);
   const localNotesCount = useMemo(() => notes.filter((note) => note.storageType === 'local').length, [notes]);
   const router = useRouter();
+  const [isFabMenuOpen, setIsFabMenuOpen] = useState<boolean>(false);
 
-  const handleCreateNote = useCallback(() => {
+  const handleCreateWebNote = useCallback(() => {
     if (!canCreateNote) {
-      Alert.alert(
-        'Límite diario',
-        `Has alcanzado el máximo de 10 notas por día. (${notesCreatedToday}/10)`
-      );
+      Alert.alert('Límite diario', `Has alcanzado el máximo de 10 notas por día. (${notesCreatedToday}/10)`);
       return;
     }
+
     const note = addNote();
     if (note) {
+      setIsFabMenuOpen(false);
       router.push({ pathname: '/editor' as never, params: { noteId: note.id } as never });
     }
   }, [canCreateNote, notesCreatedToday, addNote, router]);
 
+  const handleCreateLocalNote = useCallback(async () => {
+    const localNote = await createLocalNote();
+    if (localNote) {
+      setIsFabMenuOpen(false);
+      router.push({ pathname: '/editor' as never, params: { noteId: localNote.id } as never });
+    }
+  }, [createLocalNote, router]);
+
   const handleOpenLocalFile = useCallback(async () => {
     const localNote = await importLocalTextFile();
     if (localNote) {
+      setIsFabMenuOpen(false);
       router.push({ pathname: '/editor' as never, params: { noteId: localNote.id } as never });
     }
   }, [importLocalTextFile, router]);
@@ -121,36 +132,40 @@ export default function NotesListScreen() {
           fontSize: 14,
           lineHeight: 21,
           color: colors.textSecondary,
-          marginBottom: 16,
+          marginBottom: 6,
         },
         actionsRow: {
           flexDirection: 'row',
+          flexWrap: 'wrap' as const,
           gap: 10,
+          marginTop: 14,
         },
         actionCard: {
-          flex: 1,
+          width: '31%',
+          minWidth: 102,
+          flexGrow: 1,
           borderRadius: 18,
-          padding: 14,
+          padding: 12,
           borderWidth: 1,
-          minHeight: 110,
+          minHeight: 120,
           justifyContent: 'space-between',
         },
         actionIcon: {
-          width: 40,
-          height: 40,
+          width: 38,
+          height: 38,
           borderRadius: 12,
           alignItems: 'center',
           justifyContent: 'center',
-          marginBottom: 12,
+          marginBottom: 10,
         },
         actionTitle: {
-          fontSize: 15,
+          fontSize: 14,
           fontWeight: '700' as const,
           marginBottom: 4,
         },
         actionText: {
-          fontSize: 12,
-          lineHeight: 18,
+          fontSize: 11,
+          lineHeight: 16,
           color: colors.textSecondary,
         },
         sectionTitle: {
@@ -233,8 +248,41 @@ export default function NotesListScreen() {
           borderRadius: 10,
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: colors.destructive + '12',
+          backgroundColor: `${colors.destructive}12`,
           marginLeft: 10,
+        },
+        fabBackdrop: {
+          ...StyleSheet.absoluteFillObject,
+          backgroundColor: '#00000020',
+        },
+        fabMenu: {
+          position: 'absolute',
+          right: 20,
+          bottom: 92,
+          gap: 10,
+          alignItems: 'flex-end',
+        },
+        fabMenuItem: {
+          minWidth: 188,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: 16,
+          paddingHorizontal: 14,
+          paddingVertical: 12,
+          shadowColor: '#000000',
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.12,
+          shadowRadius: 14,
+          elevation: 8,
+        },
+        fabMenuItemText: {
+          fontSize: 13,
+          fontWeight: '700' as const,
+          color: colors.text,
         },
         fab: {
           position: 'absolute',
@@ -276,7 +324,7 @@ export default function NotesListScreen() {
         emptyDesc: {
           fontSize: 14,
           color: colors.textSecondary,
-          textAlign: 'center',
+          textAlign: 'center' as const,
           paddingHorizontal: 32,
           lineHeight: 20,
         },
@@ -313,9 +361,7 @@ export default function NotesListScreen() {
               </Text>
               <View style={[styles.typeBadge, { backgroundColor: badgeBackground }]}>
                 {isLocal ? <Save size={11} color={badgeColor} /> : <Cloud size={11} color={badgeColor} />}
-                <Text style={[styles.typeBadgeText, { color: badgeColor }]}>
-                  {isLocal ? 'Local' : 'Nube'}
-                </Text>
+                <Text style={[styles.typeBadgeText, { color: badgeColor }]}>{isLocal ? 'Local' : 'Nube'}</Text>
               </View>
             </View>
             <Text style={styles.cardPreview} numberOfLines={2}>
@@ -361,45 +407,53 @@ export default function NotesListScreen() {
               <Text style={styles.heroText}>Nº Notas en local: {localNotesCount}</Text>
               <View style={styles.actionsRow}>
                 <TouchableOpacity
-                  style={[
-                    styles.actionCard,
-                    { backgroundColor: colors.accentLight, borderColor: colors.accent + '25' },
-                  ]}
-                  onPress={handleCreateNote}
+                  style={[styles.actionCard, { backgroundColor: colors.accentLight, borderColor: `${colors.accent}25` }]}
+                  onPress={handleCreateLocalNote}
                   activeOpacity={0.88}
-                  testID="create-note-card"
+                  testID="create-local-note-card"
                 >
-                  <View style={[styles.actionIcon, { backgroundColor: colors.accent }]}> 
-                    <Plus size={20} color="#FFFFFF" />
+                  <View style={[styles.actionIcon, { backgroundColor: colors.accent }]}>
+                    <Save size={20} color="#FFFFFF" />
                   </View>
                   <View>
-                    <Text style={[styles.actionTitle, { color: colors.accent }]}>Nueva nota</Text>
-                    <Text style={styles.actionText}>Se sincroniza con tu cuenta al iniciar sesión.</Text>
+                    <Text style={[styles.actionTitle, { color: colors.accent }]}>Nueva nota local</Text>
+                    <Text style={styles.actionText}>Elige carpeta y crea el .txt en almacenamiento local.</Text>
                   </View>
                 </TouchableOpacity>
+
                 <TouchableOpacity
-                  style={[
-                    styles.actionCard,
-                    { backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
-                  ]}
+                  style={[styles.actionCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+                  onPress={handleCreateWebNote}
+                  activeOpacity={0.88}
+                  testID="create-web-note-card"
+                >
+                  <View style={[styles.actionIcon, { backgroundColor: colors.surface }]}>
+                    <Cloud size={20} color={colors.accent} />
+                  </View>
+                  <View>
+                    <Text style={[styles.actionTitle, { color: colors.text }]}>Nueva nota web</Text>
+                    <Text style={styles.actionText}>Se sincroniza con el backend usando tu sistema actual.</Text>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.actionCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                   onPress={handleOpenLocalFile}
                   activeOpacity={0.88}
                   testID="open-local-txt-card"
                 >
-                  <View style={[styles.actionIcon, { backgroundColor: colors.surface }]}> 
+                  <View style={[styles.actionIcon, { backgroundColor: colors.surface }]}>
                     <FolderOpen size={20} color={colors.text} />
                   </View>
                   <View>
-                    <Text style={[styles.actionTitle, { color: colors.text }]}>Abrir .txt local</Text>
-                    <Text style={styles.actionText}>Importa un archivo del dispositivo sin subirlo a la nube.</Text>
+                    <Text style={[styles.actionTitle, { color: colors.text }]}>Abrir nota local</Text>
+                    <Text style={styles.actionText}>Carga un archivo .txt existente desde el dispositivo.</Text>
                   </View>
                 </TouchableOpacity>
               </View>
             </View>
             <Text style={styles.sectionTitle}>Biblioteca</Text>
-            {notes.length > 0 ? (
-              <Text style={styles.counter}>{notesCreatedToday}/10 notas sincronizadas creadas hoy</Text>
-            ) : null}
+            {notes.length > 0 ? <Text style={styles.counter}>{notesCreatedToday}/10 notas sincronizadas creadas hoy</Text> : null}
           </>
         }
         ListEmptyComponent={
@@ -408,20 +462,33 @@ export default function NotesListScreen() {
               <FileText size={28} color={colors.accent} />
             </View>
             <Text style={styles.emptyTitle}>Sin notas aún</Text>
-            <Text style={styles.emptyDesc}>
-              Crea una nota nueva o abre un archivo .txt local para empezar.
-            </Text>
+            <Text style={styles.emptyDesc}>Crea una nota local, una nota web o abre un archivo .txt existente para empezar.</Text>
           </View>
         }
       />
 
+      {isFabMenuOpen ? <Pressable style={styles.fabBackdrop} onPress={() => setIsFabMenuOpen(false)} testID="fab-menu-backdrop" /> : null}
+
+      {isFabMenuOpen ? (
+        <View style={styles.fabMenu}>
+          <TouchableOpacity style={styles.fabMenuItem} onPress={handleCreateLocalNote} activeOpacity={0.88} testID="fab-create-local-note">
+            <Text style={styles.fabMenuItemText}>Nueva nota local</Text>
+            <Save size={16} color={colors.text} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.fabMenuItem} onPress={handleCreateWebNote} activeOpacity={0.88} testID="fab-create-web-note">
+            <Text style={styles.fabMenuItemText}>Nueva nota web</Text>
+            <Cloud size={16} color={colors.accent} />
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       <TouchableOpacity
         style={styles.fab}
-        onPress={handleCreateNote}
+        onPress={() => setIsFabMenuOpen((prev) => !prev)}
         activeOpacity={0.88}
         testID="create-note-fab"
       >
-        <Plus size={26} color="#FFFFFF" />
+        {isFabMenuOpen ? <X size={24} color="#FFFFFF" /> : <Plus size={26} color="#FFFFFF" />}
       </TouchableOpacity>
 
       {!settings.cookieAccepted && <CookieBanner onAccept={acceptCookie} />}
