@@ -8,12 +8,14 @@ import {
   Alert,
   ActivityIndicator,
   Pressable,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Plus, FileText, Trash2, Cloud, Save, FolderOpen, Heart, X } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useNotes } from '@/contexts/NotesContext';
 import CookieBanner from '@/components/CookieBanner';
+import SaveAsModal from '@/components/SaveAsModal';
 import { Note } from '@/types/notes';
 
 function formatDate(iso: string): string {
@@ -46,12 +48,16 @@ export default function NotesListScreen() {
     settings,
     acceptCookie,
     importLocalTextFile,
+    pickLocalNoteDirectory,
   } = useNotes();
 
   const syncedNotesCount = useMemo(() => notes.filter((note) => note.storageType === 'synced').length, [notes]);
   const localNotesCount = useMemo(() => notes.filter((note) => note.storageType === 'local').length, [notes]);
   const router = useRouter();
   const [isFabMenuOpen, setIsFabMenuOpen] = useState<boolean>(false);
+  const [showLocalNameModal, setShowLocalNameModal] = useState<boolean>(false);
+  const [pendingLocalDirectoryUri, setPendingLocalDirectoryUri] = useState<string | null>(null);
+  const [pendingLocalFileName, setPendingLocalFileName] = useState<string>('');
 
   const handleCreateWebNote = useCallback(() => {
     if (!canCreateNote) {
@@ -67,12 +73,41 @@ export default function NotesListScreen() {
   }, [canCreateNote, notesCreatedToday, addNote, router]);
 
   const handleCreateLocalNote = useCallback(async () => {
-    const localNote = await createLocalNote();
-    if (localNote) {
+    try {
+      let nextDirectoryUri: string | null = null;
+
+      if (Platform.OS !== 'web') {
+        nextDirectoryUri = await pickLocalNoteDirectory();
+        if (!nextDirectoryUri) {
+          console.log('Local directory selection cancelled before asking for file name');
+          return;
+        }
+      }
+
+      setPendingLocalDirectoryUri(nextDirectoryUri);
+      setPendingLocalFileName('nota');
+      setShowLocalNameModal(true);
       setIsFabMenuOpen(false);
+    } catch (error) {
+      console.log('Prepare local note creation error:', error);
+      Alert.alert('Error', 'No se pudo preparar la creación de la nota local.');
+    }
+  }, [pickLocalNoteDirectory]);
+
+  const handleConfirmCreateLocalNote = useCallback(async (fileName: string) => {
+    const localNote = await createLocalNote({
+      title: fileName,
+      directoryUri: pendingLocalDirectoryUri ?? undefined,
+    });
+
+    setShowLocalNameModal(false);
+    setPendingLocalDirectoryUri(null);
+    setPendingLocalFileName('');
+
+    if (localNote) {
       router.push({ pathname: '/editor' as never, params: { noteId: localNote.id } as never });
     }
-  }, [createLocalNote, router]);
+  }, [createLocalNote, pendingLocalDirectoryUri, router]);
 
   const handleOpenLocalFile = useCallback(async () => {
     const localNote = await importLocalTextFile();
@@ -136,36 +171,37 @@ export default function NotesListScreen() {
         },
         actionsRow: {
           flexDirection: 'row',
-          flexWrap: 'wrap' as const,
-          gap: 10,
+          alignItems: 'stretch',
+          justifyContent: 'space-between',
+          gap: 8,
           marginTop: 14,
         },
         actionCard: {
-          width: '31%',
-          minWidth: 102,
-          flexGrow: 1,
-          borderRadius: 18,
-          padding: 12,
+          flex: 1,
+          borderRadius: 16,
+          paddingHorizontal: 10,
+          paddingVertical: 12,
           borderWidth: 1,
-          minHeight: 120,
+          minHeight: 96,
           justifyContent: 'space-between',
+          alignSelf: 'stretch',
         },
         actionIcon: {
-          width: 38,
-          height: 38,
-          borderRadius: 12,
+          width: 34,
+          height: 34,
+          borderRadius: 11,
           alignItems: 'center',
           justifyContent: 'center',
-          marginBottom: 10,
+          marginBottom: 8,
         },
         actionTitle: {
-          fontSize: 14,
+          fontSize: 13,
           fontWeight: '700' as const,
-          marginBottom: 4,
+          marginBottom: 3,
         },
         actionText: {
-          fontSize: 11,
-          lineHeight: 16,
+          fontSize: 10,
+          lineHeight: 14,
           color: colors.textSecondary,
         },
         sectionTitle: {
@@ -490,6 +526,22 @@ export default function NotesListScreen() {
       >
         {isFabMenuOpen ? <X size={24} color="#FFFFFF" /> : <Plus size={26} color="#FFFFFF" />}
       </TouchableOpacity>
+
+      <SaveAsModal
+        visible={showLocalNameModal}
+        currentTitle={pendingLocalFileName}
+        onSave={handleConfirmCreateLocalNote}
+        onCancel={() => {
+          setShowLocalNameModal(false);
+          setPendingLocalDirectoryUri(null);
+          setPendingLocalFileName('');
+        }}
+        titleText="Nombre del archivo"
+        subtitleText="Después de elegir la carpeta, escribe el nombre del archivo .txt que quieres crear"
+        placeholderText="Ejemplo: ideas_reunion"
+        confirmText="Crear"
+        testID="create-local-note-name-modal"
+      />
 
       {!settings.cookieAccepted && <CookieBanner onAccept={acceptCookie} />}
     </View>
