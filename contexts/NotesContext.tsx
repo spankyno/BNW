@@ -70,6 +70,11 @@ interface LocalNoteWriteResult {
   recoveredMissingFile: boolean;
 }
 
+interface CreateLocalNoteOptions {
+  title: string;
+  directoryUri?: string;
+}
+
 type PickedDirectory = Awaited<ReturnType<typeof Directory.pickDirectoryAsync>>;
 
 const DEFAULT_SIGN_UP_COOLDOWN_MS = 60_000;
@@ -548,12 +553,28 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     return note;
   }, [canCreateNote, syncedNotes, persistSyncedNotes, openTabIds.length]);
 
-  const createLocalNote = useCallback(async (): Promise<Note | null> => {
+  const pickLocalNoteDirectory = useCallback(async (): Promise<string | null> => {
+    if (Platform.OS === 'web') {
+      console.log('Web platform detected, skipping native directory picker');
+      return null;
+    }
+
+    const pickedDirectory = await pickDirectoryForLocalSave();
+    return pickedDirectory?.uri ?? null;
+  }, []);
+
+  const createLocalNote = useCallback(async (options: CreateLocalNoteOptions): Promise<Note | null> => {
     try {
+      const trimmedTitle = options.title.trim();
+      if (!trimmedTitle) {
+        Alert.alert('Nombre requerido', 'Escribe un nombre de archivo válido.');
+        return null;
+      }
+
       const now = new Date();
       const baseNote = normalizeLocalNote({
         id: generateId(),
-        title: `Nota local ${formatDateTime(now)}`,
+        title: trimmedTitle,
         content: '',
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
@@ -567,22 +588,27 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
         persistLocalFiles.mutate(updated);
         setOpenTabIds((prev) => (prev.includes(baseNote.id) ? prev : [...prev.slice(-(MAX_OPEN_TABS - 1)), baseNote.id]));
         setActiveTabId(baseNote.id);
-        console.log('Created local note on web without filesystem path:', baseNote.id);
+        console.log('Created local note on web without filesystem path:', baseNote.id, 'title:', trimmedTitle);
         return baseNote;
       }
 
-      const saveResult = await saveNativeLocalNote(baseNote, true);
+      const targetDirectoryUri = options.directoryUri ?? (await pickLocalNoteDirectory());
+      if (!targetDirectoryUri) {
+        throw new Error('DIRECTORY_PICK_CANCELLED');
+      }
+
+      const targetFilePath = await createNoteFileInDirectory(targetDirectoryUri, trimmedTitle, baseNote.content);
       const localNote = normalizeLocalNote({
         ...baseNote,
-        filePath: saveResult.filePath,
-        localFileUri: saveResult.filePath,
+        filePath: targetFilePath,
+        localFileUri: targetFilePath,
       });
       const updated = [localNote, ...localFileNotes];
       setLocalFileNotes(updated);
       persistLocalFiles.mutate(updated);
       setOpenTabIds((prev) => (prev.includes(localNote.id) ? prev : [...prev.slice(-(MAX_OPEN_TABS - 1)), localNote.id]));
       setActiveTabId(localNote.id);
-      console.log('Created brand new local note:', localNote.id, 'path:', localNote.filePath ?? 'none');
+      console.log('Created brand new local note:', localNote.id, 'path:', localNote.filePath ?? 'none', 'title:', trimmedTitle);
       return localNote;
     } catch (error) {
       if (error instanceof Error && error.message === 'DIRECTORY_PICK_CANCELLED') {
@@ -593,7 +619,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       Alert.alert('Error', 'No se pudo crear la nota local en la carpeta elegida.');
       return null;
     }
-  }, [localFileNotes, persistLocalFiles]);
+  }, [localFileNotes, persistLocalFiles, pickLocalNoteDirectory]);
 
   const importLocalTextFile = useCallback(async (): Promise<Note | null> => {
     try {
@@ -1058,6 +1084,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       signOut,
       signUpCooldownUntil,
       importLocalTextFile,
+      pickLocalNoteDirectory,
       createLocalNote,
       saveNoteAsLocalFile,
       toggleFavorite,
@@ -1094,6 +1121,7 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
       signOut,
       signUpCooldownUntil,
       importLocalTextFile,
+      pickLocalNoteDirectory,
       createLocalNote,
       saveNoteAsLocalFile,
       toggleFavorite,
