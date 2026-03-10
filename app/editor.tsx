@@ -283,6 +283,10 @@ export default function EditorScreen() {
           flex: 1,
           marginHorizontal: 12,
         },
+        headerTitlePressable: {
+          borderRadius: 10,
+          paddingVertical: 2,
+        },
         headerTitle: {
           fontSize: 15,
           fontWeight: '700' as const,
@@ -438,9 +442,23 @@ export default function EditorScreen() {
           <ArrowLeft size={20} color={colors.text} />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {activeNote?.title ?? 'Editor'}
-          </Text>
+          <TouchableOpacity
+            style={styles.headerTitlePressable}
+            onLongPress={() => {
+              if (!activeNote) {
+                return;
+              }
+              setShowSaveAs(true);
+            }}
+            delayLongPress={250}
+            activeOpacity={0.75}
+            disabled={!activeNote}
+            testID="rename-note-title-trigger"
+          >
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {activeNote?.title ?? 'Editor'}
+            </Text>
+          </TouchableOpacity>
           <View style={styles.headerMeta}>
             {storageMeta.icon}
             <Text style={styles.headerMetaText}>{storageMeta.label}</Text>
@@ -607,6 +625,11 @@ export default function EditorScreen() {
         currentTitle={activeNote?.title ?? ''}
         onSave={handleSaveAs}
         onCancel={() => setShowSaveAs(false)}
+        titleText="Renombrar nota"
+        subtitleText="Mantén pulsado el nombre de arriba para cambiarlo cuando quieras"
+        placeholderText="Nuevo nombre de la nota"
+        confirmText="Aplicar"
+        testID="rename-note-modal"
       />
     </View>
   );
