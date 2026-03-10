@@ -7,9 +7,24 @@ interface SaveAsModalProps {
   currentTitle: string;
   onSave: (title: string) => void;
   onCancel: () => void;
+  titleText?: string;
+  subtitleText?: string;
+  placeholderText?: string;
+  confirmText?: string;
+  testID?: string;
 }
 
-export default React.memo(function SaveAsModal({ visible, currentTitle, onSave, onCancel }: SaveAsModalProps) {
+export default React.memo(function SaveAsModal({
+  visible,
+  currentTitle,
+  onSave,
+  onCancel,
+  titleText = 'Guardar como',
+  subtitleText = 'Escribe un nombre personalizado para tu nota',
+  placeholderText = 'Nombre de la nota',
+  confirmText = 'Guardar',
+  testID,
+}: SaveAsModalProps) {
   const { colors } = useTheme();
   const [title, setTitle] = useState(currentTitle);
 
@@ -79,27 +94,29 @@ export default React.memo(function SaveAsModal({ visible, currentTitle, onSave, 
       >
         <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onCancel} activeOpacity={1} />
         <View style={styles.card}>
-          <Text style={styles.title}>Guardar como</Text>
-          <Text style={styles.subtitle}>Escribe un nombre personalizado para tu nota</Text>
+          <Text style={styles.title}>{titleText}</Text>
+          <Text style={styles.subtitle}>{subtitleText}</Text>
           <TextInput
             style={styles.input}
             value={title}
             onChangeText={setTitle}
-            placeholder="Nombre de la nota"
+            placeholder={placeholderText}
             placeholderTextColor={colors.placeholder}
             autoFocus
             selectTextOnFocus
+            testID={testID ? `${testID}-input` : undefined}
           />
           <View style={styles.row}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={onCancel} testID={testID ? `${testID}-cancel` : undefined}>
               <Text style={styles.cancelText}>Cancelar</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.saveBtn, !title.trim() && { opacity: 0.5 }]}
               onPress={() => title.trim() && onSave(title.trim())}
               disabled={!title.trim()}
+              testID={testID ? `${testID}-confirm` : undefined}
             >
-              <Text style={styles.saveText}>Guardar</Text>
+              <Text style={styles.saveText}>{confirmText}</Text>
             </TouchableOpacity>
           </View>
         </View>
